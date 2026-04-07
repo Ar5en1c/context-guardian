@@ -26,30 +26,51 @@ registerTool({
       all: ['log', 'code', 'error', 'config', 'documentation', 'stacktrace', 'output', 'data', 'other'],
     };
 
+    const allChunks = ctx.store.getAllChunks();
     const targetLabels = labelMap[topic] || [topic];
-    const matchingChunks = ctx.store.getAllChunks().filter((c) => targetLabels.includes(c.label));
+    let matchingChunks = allChunks.filter((c) => targetLabels.includes(c.label));
 
     if (matchingChunks.length === 0) {
-      const allChunks = ctx.store.getAllChunks();
-      const keywordMatches = allChunks.filter((c) => c.text.toLowerCase().includes(topic));
-
-      if (keywordMatches.length === 0) {
-        return `No content found related to "${topic}". Available categories: ${getAvailableCategories(ctx)}`;
-      }
-
-      const combined = keywordMatches.slice(0, 5).map((c) => c.text).join('\n---\n');
-      return await ctx.llm.summarize(`Topic: ${topic}\n\n${combined}`);
+      matchingChunks = allChunks.filter((c) => c.text.toLowerCase().includes(topic));
     }
 
-    const combined = matchingChunks.slice(0, 8).map((c) => c.text).join('\n---\n');
-    const summary = await ctx.llm.summarize(`Topic: ${topic}\n\n${combined}`);
+    if (matchingChunks.length === 0) {
+      const labels = [...new Set(allChunks.map((c) => c.label))];
+      return `No content found for "${topic}". Available: ${labels.join(', ')} (${allChunks.length} total chunks)`;
+    }
 
-    return `Summary of "${topic}" (${matchingChunks.length} chunks indexed):\n\n${summary}`;
+    // Build structured overview
+    const lines: string[] = [];
+    lines.push(`## ${topic} (${matchingChunks.length} chunks)\n`);
+
+    // Key facts extraction: first lines of each chunk as bullet points
+    const keyFacts = matchingChunks.slice(0, 8).map((c) => {
+      const firstMeaningfulLine = c.text.split('\n').find((l) => l.trim().length > 10) || c.text.slice(0, 100);
+      return `- [${c.label}] ${firstMeaningfulLine.trim().slice(0, 200)}`;
+    });
+    lines.push('**Key items:**');
+    lines.push(...keyFacts);
+
+    // Count sub-patterns
+    const errorCount = matchingChunks.filter((c) => c.label === 'error' || c.label === 'stacktrace').length;
+    const codeCount = matchingChunks.filter((c) => c.label === 'code').length;
+    const logCount = matchingChunks.filter((c) => c.label === 'log').length;
+
+    if (errorCount + codeCount + logCount > 0) {
+      lines.push(`\n**Breakdown:** ${errorCount} errors, ${codeCount} code, ${logCount} logs`);
+    }
+
+    // If we have few enough chunks, also get LLM summary
+    if (matchingChunks.length <= 8) {
+      const combined = matchingChunks.map((c) => c.text).join('\n---\n');
+      try {
+        const summary = await ctx.llm.summarize(`Topic: ${topic}\n\n${combined}`);
+        lines.push(`\n**Summary:** ${summary}`);
+      } catch {
+        // Skip LLM summary if it fails
+      }
+    }
+
+    return lines.join('\n');
   },
 });
-
-function getAvailableCategories(ctx: ToolContext): string {
-  const chunks = ctx.store.getAllChunks();
-  const labels = new Set(chunks.map((c) => c.label));
-  return Array.from(labels).join(', ') || 'none';
-}

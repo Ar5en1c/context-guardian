@@ -42,6 +42,7 @@ export class OllamaAdapter implements LocalLLMAdapter {
       messages,
       stream: false,
       think: false,
+      keep_alive: '10m',
       options: { temperature: 0, num_predict: 512 },
     };
 
@@ -62,23 +63,55 @@ export class OllamaAdapter implements LocalLLMAdapter {
   }
 
   async extractIntent(rawContent: string): Promise<string> {
-    const truncated = rawContent.slice(0, 12000);
-    const prompt = `Analyze the following input that was sent to an AI coding agent. Extract the user's PRIMARY OBJECTIVE in a single, actionable sentence. Ignore all raw data dumps (logs, file contents, stack traces) and focus only on what the user is actually asking to be done.
+    // Use first 4000 chars -- enough to capture the actual request without wasting time on data dumps
+    const truncated = rawContent.slice(0, 4000);
+    const prompt = `Extract the user's PRIMARY OBJECTIVE from this AI coding agent input. ONE sentence only.
 
 INPUT:
 ${truncated}
 
-Respond with ONLY the extracted goal, nothing else. Example format:
-"Fix the authentication timeout error in the /api/login endpoint"`;
+OBJECTIVE:`;
 
-    const system = 'You are a precise intent extraction system. Output only the goal sentence, no explanation. /no_think';
+    const system = 'Extract the goal in one sentence. No explanation, no thinking, no preamble. /no_think';
 
     try {
-      return await this.generate(prompt, system);
+      const result = await this.generateFast(prompt, system);
+      // Clean up common artifacts
+      return result.replace(/^["']|["']$/g, '').replace(/^objective:\s*/i, '').trim() || 'Process the provided information and complete the requested task.';
     } catch (err) {
       log('error', `Intent extraction failed: ${err instanceof Error ? err.message : String(err)}`);
       return 'Process the provided information and complete the requested task.';
     }
+  }
+
+  // Fast generation with aggressive token limits for classification/extraction tasks
+  private async generateFast(prompt: string, system?: string): Promise<string> {
+    const messages: Array<{ role: string; content: string }> = [];
+    if (system) messages.push({ role: 'system', content: system });
+    messages.push({ role: 'user', content: prompt });
+
+    const body: Record<string, unknown> = {
+      model: this.model,
+      messages,
+      stream: false,
+      think: false,
+      keep_alive: '10m',
+      options: { temperature: 0, num_predict: 80, stop: ['\n\n', '\n'] },
+    };
+
+    const res = await fetch(`${this.endpoint}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Ollama fast chat failed: ${res.status} ${text}`);
+    }
+
+    const data = (await res.json()) as { message?: { content?: string } };
+    return stripThinkTags(data.message?.content || '').trim();
   }
 
   async classifyChunks(chunks: string[]): Promise<Array<{ label: string; chunk: string }>> {
@@ -100,9 +133,9 @@ Respond with ONLY the extracted goal, nothing else. Example format:
       const batch = unknowns.slice(i, i + BATCH_SIZE);
       const promises = batch.map(async (item) => {
         const preview = item.chunk.slice(0, 1500);
-        const prompt = `/no_think\nClassify this text into exactly ONE category. Respond with ONLY the label.\nCategories: log, code, error, config, documentation, stacktrace, output, data, other\n\nTEXT:\n${preview}\n\nCATEGORY:`;
+        const prompt = `Classify into ONE category: log, code, error, config, documentation, stacktrace, output, data, other\n\nTEXT:\n${preview}\n\nCATEGORY:`;
         try {
-          const label = (await this.generate(prompt)).toLowerCase().replace(/[^a-z]/g, '');
+          const label = (await this.generateFast(prompt, 'Respond with ONLY the category label. /no_think')).toLowerCase().replace(/[^a-z]/g, '');
           item.label = valid.includes(label) ? label : 'other';
         } catch {
           // keep 'other'

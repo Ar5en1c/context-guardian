@@ -85,8 +85,23 @@ export async function rewriteRequest(
 
   log('intercept', `Indexed ${chunks.length} chunks. Labels: ${summarizeLabels(chunks.map((c) => c.label))}`);
 
-  const systemPrompt = buildSystemPrompt(goal, chunks, enabledTools);
-  const userPrompt = buildUserPrompt(goal, chunks);
+  // Relevance scoring: embed the goal and find top-K most relevant chunks
+  let relevantChunks = chunks;
+  try {
+    const goalEmbedding = (await llm.embed([goal]))[0];
+    if (goalEmbedding && goalEmbedding.some((v) => v !== 0)) {
+      const scored = store.search(goalEmbedding, Math.min(10, chunks.length));
+      if (scored.length > 0) {
+        relevantChunks = scored.map((s) => s.chunk);
+        log('intercept', `Relevance filter: ${chunks.length} -> ${relevantChunks.length} chunks (top-K by cosine similarity)`);
+      }
+    }
+  } catch {
+    // Fall back to all chunks
+  }
+
+  const systemPrompt = buildSystemPrompt(goal, relevantChunks, enabledTools);
+  const userPrompt = buildUserPrompt(goal, relevantChunks);
 
   const toolDefs = getToolDefinitions(enabledTools);
   const openaiTools = toOpenAIToolFormat(toolDefs);
@@ -137,42 +152,80 @@ function buildSystemPrompt(
   enabledTools: string[],
 ): string {
   const labels = summarizeLabels(chunks.map((c) => c.label));
+  const hasErrors = chunks.some((c) => c.label === 'error' || c.label === 'stacktrace');
+  const hasCode = chunks.some((c) => c.label === 'code');
+  const hasLogs = chunks.some((c) => c.label === 'log');
+
+  // Task-specific investigation sequence
+  let strategy: string;
+  if (hasErrors && hasCode) {
+    strategy = `INVESTIGATION STRATEGY:
+1. First: use 'summary' with topic 'errors' to understand what failed.
+2. Then: use 'grep' to find the specific error pattern in code.
+3. Then: use 'file_read' to read the relevant code section in full.
+4. Finally: propose a concrete fix with code.`;
+  } else if (hasLogs && hasCode) {
+    strategy = `INVESTIGATION STRATEGY:
+1. First: use 'summary' with topic 'logs' to understand the timeline.
+2. Then: use 'log_search' to find key events.
+3. Then: use 'file_read' to read the relevant code.
+4. Finally: explain the root cause and propose a fix.`;
+  } else if (hasCode) {
+    strategy = `INVESTIGATION STRATEGY:
+1. First: use 'summary' with topic 'all' to understand the codebase.
+2. Then: use 'file_read' to inspect relevant files.
+3. Then: use 'grep' for cross-references.
+4. Finally: complete the requested task.`;
+  } else {
+    strategy = `INVESTIGATION STRATEGY:
+1. First: use 'summary' with topic 'all' to get an overview.
+2. Then: use 'grep' or 'log_search' for specific details.
+3. Finally: complete the objective based on findings.`;
+  }
 
   return `CONTEXT GUARDIAN INSTRUCTIONS:
-You are working on the following objective: ${goal}
+OBJECTIVE: ${goal}
 
-The original request contained a large amount of raw data that has been indexed locally.
-DO NOT ask the user to provide the data again. Instead, use the available tools to retrieve specific information on-demand.
+The original request contained ${chunks.length} chunks of raw data (${labels}) that have been indexed locally. You MUST use tools to retrieve specific information -- do NOT ask the user to re-paste anything.
 
-Available indexed content: ${labels}
-Total chunks indexed: ${chunks.length}
-
-Available tools: ${enabledTools.join(', ')}
+${strategy}
 
 RULES:
-1. Use tools to fetch specific data rather than assuming or hallucinating content.
-2. Start by using the 'summary' tool to understand the overall context.
-3. Use 'grep' or 'log_search' for precise lookups.
-4. Use 'file_read' to inspect specific code sections.
-5. Stay focused on the primary objective.
-6. Do not ask the user to re-paste any data.`;
+- Use tools to fetch data. Do not guess or hallucinate content.
+- Be specific in tool queries. Use exact error messages, function names, or patterns.
+- After gathering evidence, provide a concrete, actionable response.
+- Available tools: ${enabledTools.join(', ')}`;
 }
 
 function buildUserPrompt(
   goal: string,
   chunks: Array<{ label: string; text: string }>,
 ): string {
-  const preview = chunks.slice(0, 3).map((c) => {
-    const snippet = c.text.slice(0, 200).replace(/\n/g, ' ');
-    return `[${c.label}] ${snippet}...`;
-  }).join('\n');
+  // Build structured preview with the most relevant snippets
+  const errorChunks = chunks.filter((c) => c.label === 'error' || c.label === 'stacktrace');
+  const codeChunks = chunks.filter((c) => c.label === 'code');
+  const logChunks = chunks.filter((c) => c.label === 'log');
+  const otherChunks = chunks.filter((c) => !['error', 'stacktrace', 'code', 'log'].includes(c.label));
+
+  const previews: string[] = [];
+  const addPreview = (label: string, items: typeof chunks, max: number) => {
+    for (const c of items.slice(0, max)) {
+      const firstLine = c.text.split('\n')[0].slice(0, 150);
+      previews.push(`  [${label}] ${firstLine}`);
+    }
+  };
+
+  addPreview('ERROR', errorChunks, 3);
+  addPreview('CODE', codeChunks, 2);
+  addPreview('LOG', logChunks, 2);
+  addPreview('OTHER', otherChunks, 1);
 
   return `OBJECTIVE: ${goal}
 
-I have provided a large amount of context data that has been indexed. Here is a brief preview:
-${preview}
+INDEXED DATA PREVIEW (${chunks.length} chunks available via tools):
+${previews.join('\n')}
 
-Please use the available tools (log_search, file_read, grep, summary) to investigate and complete the objective. Start by getting a summary of the available data.`;
+Begin investigation using the strategy above. Start with 'summary' to get an overview, then use precise tool calls.`;
 }
 
 function summarizeLabels(labels: string[]): string {
