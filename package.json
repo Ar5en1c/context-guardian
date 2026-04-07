@@ -1,0 +1,48 @@
+{
+  "name": "context-guardian",
+  "version": "0.1.0",
+  "description": "Edge-Cloud Hybrid Agent Harness. Local LLM intercepts massive prompts, forces cloud agents to use deterministic RAG tools instead of context-stuffing.",
+  "type": "module",
+  "bin": {
+    "context-guardian": "./bin/context-guardian.js"
+  },
+  "main": "./dist/cli.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/cli.ts",
+    "start": "node dist/cli.js start",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "tsc --noEmit"
+  },
+  "keywords": [
+    "ai-agent",
+    "context-window",
+    "local-llm",
+    "proxy",
+    "rag",
+    "webgpu",
+    "ollama",
+    "coding-agent"
+  ],
+  "author": "Kuldeep Singh",
+  "license": "MIT",
+  "dependencies": {
+    "@hono/node-server": "^1.19.13",
+    "chalk": "^5.4.1",
+    "commander": "^13.1.0",
+    "eventsource-parser": "^3.0.1",
+    "gpt-tokenizer": "^2.8.1",
+    "hono": "^4.7.6",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.14.1",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.3",
+    "vitest": "^3.1.1"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
