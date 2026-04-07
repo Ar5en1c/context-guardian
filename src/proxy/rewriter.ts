@@ -3,6 +3,7 @@ import type { VectorStore } from '../index/store.js';
 import { chunkText } from '../index/chunker.js';
 import { getToolDefinitions, toOpenAIToolFormat } from '../tools/registry.js';
 import { log } from '../display/logger.js';
+import { Timer } from '../display/timing.js';
 import { countTokens } from './interceptor.js';
 
 export interface RewriteResult {
@@ -13,6 +14,13 @@ export interface RewriteResult {
   inputTokens: number;
   outputTokens: number;
   toolNames: string[];
+  timingMs: {
+    intent: number;
+    chunking: number;
+    classification: number;
+    embedding: number;
+    total: number;
+  };
 }
 
 export async function rewriteRequest(
@@ -23,23 +31,32 @@ export async function rewriteRequest(
   enabledTools: string[],
   contextBudget: number,
 ): Promise<RewriteResult> {
+  const timer = new Timer();
+  timer.mark('start');
   const inputTokens = countTokens(rawContent);
 
+  timer.mark('intentStart');
   log('intercept', `Extracting intent from ${inputTokens} tokens...`);
   const goal = await llm.extractIntent(rawContent);
+  timer.measure('intent', 'intentStart');
   log('intercept', `Goal: "${goal}"`);
 
+  timer.mark('chunkStart');
   log('intercept', 'Chunking and indexing content...');
   store.clear();
   const chunks = chunkText(rawContent, { source: 'request' });
+  timer.measure('chunking', 'chunkStart');
 
+  timer.mark('classifyStart');
   const classified = await llm.classifyChunks(chunks.map((c) => c.text));
   for (let i = 0; i < chunks.length; i++) {
     if (classified[i]) {
       chunks[i].label = classified[i].label;
     }
   }
+  timer.measure('classification', 'classifyStart');
 
+  timer.mark('embedStart');
   let embeddings: number[][] = [];
   try {
     embeddings = await llm.embed(chunks.map((c) => c.text));
@@ -47,6 +64,7 @@ export async function rewriteRequest(
     embeddings = chunks.map(() => []);
   }
   store.addBatch(chunks, embeddings);
+  timer.measure('embedding', 'embedStart');
 
   log('intercept', `Indexed ${chunks.length} chunks. Labels: ${summarizeLabels(chunks.map((c) => c.label))}`);
 
@@ -73,7 +91,10 @@ export async function rewriteRequest(
 
   const outputTokens = countTokens(rewrittenMessages.map((m) => m.content).join('\n'));
 
+  timer.measure('total', 'start');
+
   log('intercept', `Rewritten: ${inputTokens} -> ${outputTokens} tokens (${Math.round((1 - outputTokens / inputTokens) * 100)}% reduction)`);
+  timer.print();
 
   return {
     messages: rewrittenMessages,
@@ -83,6 +104,13 @@ export async function rewriteRequest(
     inputTokens,
     outputTokens,
     toolNames: enabledTools,
+    timingMs: {
+      intent: timer.get('intent'),
+      chunking: timer.get('chunking'),
+      classification: timer.get('classification'),
+      embedding: timer.get('embedding'),
+      total: timer.get('total'),
+    },
   };
 }
 

@@ -4,7 +4,7 @@ import type { LocalLLMAdapter } from '../local-llm/adapter.js';
 import { VectorStore } from '../index/store.js';
 import { analyzeRequest, extractRawContent } from './interceptor.js';
 import { rewriteRequest } from './rewriter.js';
-import { createSSEHeaders } from './streaming.js';
+import { createSSEHeaders, synthesizeSSEStream, synthesizeAnthropicSSEStream } from './streaming.js';
 import { getTool } from '../tools/registry.js';
 import * as openai from './adapters/openai.js';
 import * as anthropic from './adapters/anthropic.js';
@@ -150,14 +150,11 @@ async function handleOpenAIRequest(
     logRequest('intercept', 'openai', rewrite.inputTokens, body.model, rewrite.goal, rewrite.outputTokens);
 
     const forwardReq = openai.buildForwardRequest(body, rewrite.messages, rewrite.tools);
+    const wasStreaming = Boolean(body.stream);
 
-    if (body.stream) {
-      const cloudResponse = await openai.forwardToCloud(config.cloud.openai_base, apiKey, forwardReq, extraHeaders);
-      if (!cloudResponse.body) return c.json({ error: 'No response body from cloud' }, 502);
-      const headers = createSSEHeaders();
-      for (const [k, v] of Object.entries(headers)) c.header(k, v);
-      return c.body(cloudResponse.body as unknown as ReadableStream);
-    }
+    // For intercepted requests, always use non-stream to enable tool call loop,
+    // then re-synthesize SSE if the original request was streaming
+    forwardReq.stream = false;
 
     // Multi-round tool call loop
     let currentReq = forwardReq;
@@ -168,6 +165,11 @@ async function handleOpenAIRequest(
       const responseData = (await cloudResponse.json()) as openai.OpenAIResponse;
 
       if (!openai.hasToolCalls(responseData)) {
+        if (wasStreaming) {
+          const headers = createSSEHeaders();
+          for (const [k, v] of Object.entries(headers)) c.header(k, v);
+          return c.body(synthesizeSSEStream(responseData));
+        }
         return c.json(responseData);
       }
 
@@ -191,6 +193,11 @@ async function handleOpenAIRequest(
     delete finalReq.tool_choice;
     const finalRes = await openai.forwardToCloud(config.cloud.openai_base, apiKey, finalReq, extraHeaders);
     const finalData = await finalRes.json();
+    if (wasStreaming) {
+      const headers = createSSEHeaders();
+      for (const [k, v] of Object.entries(headers)) c.header(k, v);
+      return c.body(synthesizeSSEStream(finalData));
+    }
     return c.json(finalData);
   } catch (err) {
     log('error', `Intercept failed, falling back to passthrough: ${err instanceof Error ? err.message : String(err)}`);
@@ -248,15 +255,8 @@ async function handleAnthropicRequest(
     logRequest('intercept', 'anthropic', rewrite.inputTokens, body.model, rewrite.goal, rewrite.outputTokens);
 
     const forwardReq = anthropic.buildForwardRequest(body, rewrite.messages, rewrite.tools);
-
-    if (body.stream && !config.verbose) {
-      const cloudResponse = await anthropic.forwardToCloud(config.cloud.anthropic_base, apiKey, forwardReq, extraHeaders);
-      if (cloudResponse.body) {
-        const headers = createSSEHeaders();
-        for (const [k, v] of Object.entries(headers)) c.header(k, v);
-        return c.body(cloudResponse.body as unknown as ReadableStream);
-      }
-    }
+    const wasStreaming = Boolean(body.stream);
+    forwardReq.stream = false;
 
     // Multi-round tool call loop for Anthropic
     let currentReq = forwardReq;
@@ -266,6 +266,11 @@ async function handleAnthropicRequest(
       const responseData = (await cloudResponse.json()) as anthropic.AnthropicResponse;
 
       if (!anthropic.hasToolUse(responseData)) {
+        if (wasStreaming) {
+          const headers = createSSEHeaders();
+          for (const [k, v] of Object.entries(headers)) c.header(k, v);
+          return c.body(synthesizeAnthropicSSEStream(responseData));
+        }
         return c.json(responseData);
       }
 
@@ -295,6 +300,11 @@ async function handleAnthropicRequest(
     delete finalReq.tools;
     const finalRes = await anthropic.forwardToCloud(config.cloud.anthropic_base, apiKey, finalReq, extraHeaders);
     const finalData = await finalRes.json();
+    if (wasStreaming) {
+      const headers = createSSEHeaders();
+      for (const [k, v] of Object.entries(headers)) c.header(k, v);
+      return c.body(synthesizeAnthropicSSEStream(finalData));
+    }
     return c.json(finalData);
   } catch (err) {
     log('error', `Anthropic intercept failed, falling back: ${err instanceof Error ? err.message : String(err)}`);

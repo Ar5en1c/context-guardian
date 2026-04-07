@@ -89,6 +89,108 @@ program
   });
 
 program
+  .command('eval')
+  .description('A/B evaluation: run same prompt with and without interception, compare results')
+  .requiredOption('--prompt <text>', 'The prompt to test')
+  .option('--model <string>', 'Cloud model to test against', 'gpt-4o-mini')
+  .option('--threshold <number>', 'Token threshold', '100')
+  .option('-m, --local-model <string>', 'Local LLM model', 'qwen3.5:4b')
+  .option('-e, --endpoint <string>', 'Ollama endpoint', 'http://localhost:11434')
+  .action(async (opts) => {
+    const { OllamaAdapter } = await import('./local-llm/ollama.js');
+    const { analyzeRequest, extractRawContent, countTokens } = await import('./proxy/interceptor.js');
+    const { rewriteRequest } = await import('./proxy/rewriter.js');
+    const { VectorStore } = await import('./index/store.js');
+    const { loadConfig } = await import('./config.js');
+
+    await import('./tools/log-search.js');
+    await import('./tools/file-read.js');
+    await import('./tools/grep.js');
+    await import('./tools/summary.js');
+
+    const config = loadConfig({ threshold_tokens: Number(opts.threshold) });
+    const llm = new OllamaAdapter(opts.endpoint, opts.localModel, 'nomic-embed-text');
+    const store = new VectorStore();
+
+    const prompt = opts.prompt;
+    const tokenCount = countTokens(prompt);
+    process.stderr.write(`\nPrompt: ${prompt.slice(0, 100)}${prompt.length > 100 ? '...' : ''}\n`);
+    process.stderr.write(`Tokens: ${tokenCount}\n\n`);
+
+    // Without proxy (raw)
+    process.stderr.write('--- WITHOUT PROXY (raw) ---\n');
+    process.stderr.write(`Would send ${tokenCount} tokens directly to ${opts.model}\n\n`);
+
+    // With proxy (intercepted)
+    process.stderr.write('--- WITH PROXY (intercepted) ---\n');
+    const messages = [{ role: 'user', content: prompt }];
+    const rawContent = extractRawContent(messages);
+    const decision = analyzeRequest(messages, config.threshold_tokens);
+
+    if (!decision.shouldIntercept) {
+      process.stderr.write(`Below threshold (${config.threshold_tokens}). Would passthrough unchanged.\n`);
+      return;
+    }
+
+    const rewrite = await rewriteRequest(rawContent, messages, llm, store, config.tools, config.context_budget);
+
+    process.stderr.write(`\nGoal extracted: "${rewrite.goal}"\n`);
+    process.stderr.write(`Chunks indexed: ${rewrite.chunksIndexed}\n`);
+    process.stderr.write(`Token reduction: ${rewrite.inputTokens} -> ${rewrite.outputTokens} (${Math.round((1 - rewrite.outputTokens / rewrite.inputTokens) * 100)}%)\n`);
+    process.stderr.write(`Tools injected: ${rewrite.toolNames.join(', ')}\n`);
+    process.stderr.write(`Timing: intent=${rewrite.timingMs.intent.toFixed(0)}ms classify=${rewrite.timingMs.classification.toFixed(0)}ms embed=${rewrite.timingMs.embedding.toFixed(0)}ms total=${rewrite.timingMs.total.toFixed(0)}ms\n`);
+    process.stderr.write(`\n--- REWRITTEN SYSTEM PROMPT ---\n${rewrite.messages[0].content}\n`);
+    process.stderr.write(`\n--- REWRITTEN USER PROMPT ---\n${rewrite.messages[1].content}\n`);
+  });
+
+program
+  .command('dry-run')
+  .description('Show what would be rewritten for a given input file, without forwarding to cloud')
+  .requiredOption('--file <path>', 'Path to a file containing the raw content to analyze')
+  .option('-m, --model <string>', 'Local LLM model', 'qwen3.5:4b')
+  .option('-e, --endpoint <string>', 'Ollama endpoint', 'http://localhost:11434')
+  .option('-t, --threshold <number>', 'Token threshold', '100')
+  .action(async (opts) => {
+    const { readFileSync } = await import('node:fs');
+    const { OllamaAdapter } = await import('./local-llm/ollama.js');
+    const { countTokens } = await import('./proxy/interceptor.js');
+    const { rewriteRequest } = await import('./proxy/rewriter.js');
+    const { VectorStore } = await import('./index/store.js');
+    const { loadConfig } = await import('./config.js');
+
+    await import('./tools/log-search.js');
+    await import('./tools/file-read.js');
+    await import('./tools/grep.js');
+    await import('./tools/summary.js');
+
+    const config = loadConfig({ threshold_tokens: Number(opts.threshold) });
+    const llm = new OllamaAdapter(opts.endpoint, opts.model, 'nomic-embed-text');
+    const store = new VectorStore();
+
+    let content: string;
+    try {
+      content = readFileSync(opts.file, 'utf-8');
+    } catch (err) {
+      process.stderr.write(`Cannot read file: ${opts.file}\n`);
+      process.exit(1);
+    }
+
+    const tokenCount = countTokens(content);
+    process.stderr.write(`File: ${opts.file} (${tokenCount} tokens)\n\n`);
+
+    const messages = [{ role: 'user' as const, content }];
+    const rewrite = await rewriteRequest(content, messages, llm, store, config.tools, config.context_budget);
+
+    process.stderr.write(`Goal: "${rewrite.goal}"\n`);
+    process.stderr.write(`Chunks: ${rewrite.chunksIndexed}\n`);
+    process.stderr.write(`Reduction: ${rewrite.inputTokens} -> ${rewrite.outputTokens} tokens (${Math.round((1 - rewrite.outputTokens / rewrite.inputTokens) * 100)}%)\n`);
+    process.stderr.write(`Timing: ${rewrite.timingMs.total.toFixed(0)}ms total\n\n`);
+
+    process.stdout.write(JSON.stringify({ goal: rewrite.goal, messages: rewrite.messages, tools: rewrite.toolNames, timing: rewrite.timingMs }, null, 2));
+    process.stdout.write('\n');
+  });
+
+program
   .command('init')
   .description('Generate a guardian.config.json in the current directory')
   .action(async () => {

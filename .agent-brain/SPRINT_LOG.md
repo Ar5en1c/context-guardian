@@ -75,3 +75,64 @@
 - Streaming interception (SSE parse + rewrite mid-stream)
 - SQLite FTS5 session persistence (moved to Sprint 3 for proper design)
 - MCP server mode
+
+---
+
+## Sprint 3 -- Prove It Works (IN PROGRESS)
+
+### Honest Assessment Inputs (pre-sprint review)
+- Zero real agent traffic has touched this proxy
+- Streaming requests (90%+ of real agent traffic) bypass rewriting entirely
+- Prompt rewriting quality is unproven -- could be WORSE than raw dump
+- No latency overhead measurement exists
+- Without streaming + real benchmarks, this is a demo, not a product
+
+### Goals (ordered by "does this prove the product?")
+1. Streaming interception: buffer stream request body, intercept if over threshold,
+   forward rewritten request as non-stream, re-emit response as SSE stream to agent
+2. Latency instrumentation: measure local LLM time, cloud forward time, total overhead
+3. A/B evaluation harness: CLI command to run same prompt with/without proxy, compare
+4. Real integration test script: automated test with real Ollama + mock cloud server
+5. Edge case hardening: malformed requests, empty messages, huge single messages,
+   missing API keys, Ollama timeout, cloud 429/500 responses
+6. Dry-run mode: --dry-run flag shows what WOULD be rewritten without forwarding
+
+### What Was Built
+1. Streaming interception: intercepted requests have stream=true stripped, sent as
+   non-stream to cloud (enabling multi-round tool calls), response re-synthesized
+   as SSE chunks back to agent. Both OpenAI and Anthropic formats supported.
+2. SSE synthesis: synthesizeSSEStream (OpenAI format) and synthesizeAnthropicSSEStream
+   create proper chunk-by-chunk SSE streams from JSON responses. Content split into
+   ~20-char pieces to simulate realistic streaming behavior.
+3. Timer class: mark/measure/report pattern tracks intent extraction, chunking,
+   classification, embedding, and total time. Printed on every interception.
+4. RewriteResult now includes timingMs breakdown for programmatic access.
+5. CLI `eval` command: A/B comparison -- shows token reduction, timing, goal extraction,
+   and full rewritten prompts side-by-side for a given input.
+6. CLI `dry-run` command: reads a file, runs full rewrite pipeline, outputs JSON
+   with goal/messages/tools/timing without forwarding to cloud.
+7. Mock cloud integration test: Hono server simulating OpenAI API, validates
+   passthrough, interception with tool loop, SSE streaming, and timing stats.
+8. Edge case test suite: empty messages, null content, missing auth headers,
+   invalid JSON bodies, 100K character messages, missing Anthropic keys, wrong HTTP methods.
+
+### Metrics
+- 64 passing tests (up from 53 in Sprint 2)
+- 10 test files
+- Clean compile, zero warnings
+- SSE streaming verified: Content-Type=text/event-stream, data: chunks, [DONE] terminator
+- Timing instrumentation wired into every interception
+
+### Key Architecture Decision
+For intercepted streaming requests, we convert stream→non-stream at the cloud boundary.
+This enables the multi-round tool call loop (which requires parsing JSON responses).
+The final response is then re-synthesized as SSE chunks back to the agent.
+Trade-off: agent sees slightly delayed "streaming" (buffered), but gets the full
+benefit of tool-augmented responses. For 90%+ of real agent traffic (which uses
+streaming), this means interception now WORKS instead of being bypassed.
+
+### Deferred to Sprint 4
+- SQLite FTS5 session persistence (cross-request memory)
+- npm packaging for `npx context-guardian`
+- Test with real Ollama + real cloud API (not mock)
+- Benchmark with actual Aider/OpenCode/Claude Code traffic
