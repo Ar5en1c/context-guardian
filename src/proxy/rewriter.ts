@@ -23,6 +23,12 @@ export interface RewriteResult {
   };
 }
 
+import type { Chunk } from '../index/chunker.js';
+
+export interface RewriteOptions {
+  sessionStore?: { addChunks: (chunks: Chunk[], embeddings: number[][]) => void; startSession: (goal?: string) => void };
+}
+
 export async function rewriteRequest(
   rawContent: string,
   originalMessages: Array<{ role: string; content: unknown }>,
@@ -30,6 +36,7 @@ export async function rewriteRequest(
   store: VectorStore,
   enabledTools: string[],
   contextBudget: number,
+  options?: RewriteOptions,
 ): Promise<RewriteResult> {
   const timer = new Timer();
   timer.mark('start');
@@ -65,6 +72,16 @@ export async function rewriteRequest(
   }
   store.addBatch(chunks, embeddings);
   timer.measure('embedding', 'embedStart');
+
+  // Persist to session store for cross-request memory
+  if (options?.sessionStore) {
+    try {
+      options.sessionStore.startSession(goal);
+      options.sessionStore.addChunks(chunks, embeddings);
+    } catch {
+      // never crash the proxy over persistence
+    }
+  }
 
   log('intercept', `Indexed ${chunks.length} chunks. Labels: ${summarizeLabels(chunks.map((c) => c.label))}`);
 

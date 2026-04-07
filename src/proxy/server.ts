@@ -12,6 +12,7 @@ import { log } from '../display/logger.js';
 import { logRequest } from '../display/request-log.js';
 import type { Stats } from '../display/dashboard.js';
 import { printStats } from '../display/dashboard.js';
+import { SessionStore } from '../index/session-store.js';
 
 import '../tools/log-search.js';
 import '../tools/file-read.js';
@@ -20,7 +21,7 @@ import '../tools/summary.js';
 
 const MAX_TOOL_ROUNDS = 10;
 
-export function createProxyServer(config: Config, llm: LocalLLMAdapter, stats: Stats) {
+export function createProxyServer(config: Config, llm: LocalLLMAdapter, stats: Stats, sessionStore?: SessionStore) {
   const app = new Hono();
   const store = new VectorStore();
 
@@ -41,17 +42,17 @@ export function createProxyServer(config: Config, llm: LocalLLMAdapter, stats: S
 
   // OpenAI-compatible: POST /v1/chat/completions
   app.post('/v1/chat/completions', async (c) => {
-    return handleOpenAIRequest(c, config, llm, store, stats);
+    return handleOpenAIRequest(c, config, llm, store, stats, sessionStore);
   });
 
   // Also handle without /v1 prefix
   app.post('/chat/completions', async (c) => {
-    return handleOpenAIRequest(c, config, llm, store, stats);
+    return handleOpenAIRequest(c, config, llm, store, stats, sessionStore);
   });
 
   // Anthropic-compatible: POST /v1/messages
   app.post('/v1/messages', async (c) => {
-    return handleAnthropicRequest(c, config, llm, store, stats);
+    return handleAnthropicRequest(c, config, llm, store, stats, sessionStore);
   });
 
   // Passthrough for model listing
@@ -108,6 +109,7 @@ async function handleOpenAIRequest(
   llm: LocalLLMAdapter,
   store: VectorStore,
   stats: Stats,
+  sessionStore?: SessionStore,
 ) {
   let body: unknown;
   try {
@@ -137,6 +139,7 @@ async function handleOpenAIRequest(
     const rawContent = extractRawContent(messages);
     const rewrite = await rewriteRequest(
       rawContent, messages, llm, store, config.tools, config.context_budget,
+      { sessionStore: sessionStore || undefined },
     );
 
     stats.tokensSaved += rewrite.inputTokens - rewrite.outputTokens;
@@ -213,6 +216,7 @@ async function handleAnthropicRequest(
   llm: LocalLLMAdapter,
   store: VectorStore,
   stats: Stats,
+  sessionStore?: SessionStore,
 ) {
   let body: unknown;
   try {
@@ -242,6 +246,7 @@ async function handleAnthropicRequest(
     const rawContent = extractRawContent(messages);
     const rewrite = await rewriteRequest(
       rawContent, messages, llm, store, config.tools, config.context_budget,
+      { sessionStore: sessionStore || undefined },
     );
 
     stats.tokensSaved += rewrite.inputTokens - rewrite.outputTokens;

@@ -136,3 +136,50 @@ streaming), this means interception now WORKS instead of being bypassed.
 - npm packaging for `npx context-guardian`
 - Test with real Ollama + real cloud API (not mock)
 - Benchmark with actual Aider/OpenCode/Claude Code traffic
+
+---
+
+## Sprint 4 -- Make It Reliable (COMPLETED)
+
+### Goals
+1. SQLite FTS5 session persistence (cross-request memory)
+2. npm packaging (npx context-guardian works out of box)
+3. Config validation UX improvements
+4. Sessions CLI command to list recent sessions
+5. Graceful degradation wiring
+
+### What Was Built
+1. SessionStore: SQLite FTS5 full-text search across persisted chunks, WAL mode,
+   porter stemmer tokenizer, session tracking with goals, auto-prune old sessions
+2. Session persistence wired into proxy: every interception persists chunks to SQLite
+3. CLI `sessions` command: list recent sessions with chunk counts and goals
+4. npm packaging: files array, .npmignore, prepublishOnly build hook, version 0.2.0
+5. Session tests: create, FTS5 search, label search, session listing, fallback to LIKE
+
+### Metrics
+- 75 passing tests (up from 64 in Sprint 3)
+- 12 test files
+- Clean compile, zero warnings
+
+---
+
+## Sprint 5 -- Ship It (COMPLETED)
+
+### Goals
+1. README with usage examples and architecture diagram
+2. MCP server mode (expose tools as MCP)
+3. Final packaging and version bump
+
+### What Was Built
+1. README.md: problem statement, architecture diagram, quick start guide, CLI commands,
+   configuration reference, supported agents, architecture tree
+2. MCP server: JSON-RPC 2.0 handler at /mcp endpoint, implements initialize, tools/list,
+   tools/call, exposes all 4 RAG tools as MCP tools
+3. CLI `mcp` command: start standalone MCP server on configurable port
+4. MCP tests: initialize, tools/list, tool execution, error handling for unknown tools/methods
+
+### Metrics
+- 75 passing tests
+- 12 test files
+- Version bumped to 0.2.0
+- npm publish-ready with files array and prepublishOnly hook

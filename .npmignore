@@ -1,0 +1,13 @@
+src/
+test/
+.agent-brain/
+.context-guardian/
+*.ts
+!dist/**/*.d.ts
+tsconfig.json
+vitest.config.*
+.gitignore
+.git/
+node_modules/
+experiments/
+docs/

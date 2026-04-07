@@ -1,19 +1,26 @@
 {
   "name": "context-guardian",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Edge-Cloud Hybrid Agent Harness. Local LLM intercepts massive prompts, forces cloud agents to use deterministic RAG tools instead of context-stuffing.",
   "type": "module",
   "bin": {
     "context-guardian": "./bin/context-guardian.js"
   },
   "main": "./dist/cli.js",
+  "files": [
+    "dist",
+    "bin",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/cli.ts",
     "start": "node dist/cli.js start",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
   },
   "keywords": [
     "ai-agent",
@@ -29,6 +36,7 @@
   "license": "MIT",
   "dependencies": {
     "@hono/node-server": "^1.19.13",
+    "better-sqlite3": "^12.8.0",
     "chalk": "^5.4.1",
     "commander": "^13.1.0",
     "eventsource-parser": "^3.0.1",
@@ -37,6 +45,7 @@
     "zod": "^3.24.2"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.14.1",
     "tsx": "^4.19.3",
     "typescript": "^5.8.3",

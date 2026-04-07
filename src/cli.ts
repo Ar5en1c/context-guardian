@@ -77,8 +77,13 @@ program
       await ensureModelPulled(config.local_llm.endpoint, config.local_llm.embed_model);
     }
 
+    const { SessionStore } = await import('./index/session-store.js');
+    const sessionStore = new SessionStore();
+    sessionStore.pruneOldSessions(7);
+    log('info', `Session: ${sessionStore.currentSessionId}`);
+
     const stats = createStats();
-    const app = createProxyServer(config, llm, stats);
+    const app = createProxyServer(config, llm, stats, sessionStore);
 
     printBanner(config, ollamaReady);
 
@@ -219,6 +224,50 @@ program
     };
     writeFileSync(path, JSON.stringify(defaultConfig, null, 2) + '\n');
     process.stderr.write(`Created ${path}\n`);
+  });
+
+program
+  .command('mcp')
+  .description('Start as an MCP (Model Context Protocol) server, exposing RAG tools')
+  .option('-p, --port <number>', 'MCP server port', '9120')
+  .option('-m, --model <string>', 'Local LLM model name', 'qwen3.5:4b')
+  .option('-e, --endpoint <string>', 'Ollama endpoint', 'http://localhost:11434')
+  .action(async (opts) => {
+    const { createMCPServer } = await import('./mcp/server.js');
+    const { OllamaAdapter } = await import('./local-llm/ollama.js');
+
+    const llm = new OllamaAdapter(opts.endpoint, opts.model, 'nomic-embed-text');
+    const { app } = createMCPServer(llm);
+
+    const { serve } = await import('@hono/node-server');
+    const port = Number(opts.port);
+    serve({ fetch: app.fetch, port }, () => {
+      log('info', `MCP server listening on http://localhost:${port}/mcp`);
+      log('info', `Add to your MCP client: { "url": "http://localhost:${port}/mcp" }`);
+    });
+  });
+
+program
+  .command('sessions')
+  .description('List recent proxy sessions with chunk counts')
+  .option('-l, --limit <number>', 'Number of sessions to show', '20')
+  .action(async (opts) => {
+    const { SessionStore } = await import('./index/session-store.js');
+    const store = new SessionStore();
+    const sessions = store.listSessions(Number(opts.limit));
+    store.close();
+
+    if (sessions.length === 0) {
+      process.stderr.write('No sessions found. Start the proxy to create sessions.\n');
+      return;
+    }
+
+    process.stderr.write(`\n  Recent sessions (${sessions.length}):\n\n`);
+    for (const s of sessions) {
+      const goal = s.goal ? ` -- ${s.goal.slice(0, 60)}` : '';
+      process.stderr.write(`  ${s.id}  chunks:${s.chunkCount}  reqs:${s.requestCount}  ${s.lastActive}${goal}\n`);
+    }
+    process.stderr.write('\n');
   });
 
 program
