@@ -32,15 +32,20 @@ export class OllamaAdapter implements LocalLLMAdapter {
   }
 
   private async generate(prompt: string, system?: string): Promise<string> {
+    // Use /api/chat instead of /api/generate -- the generate API ignores think=false for qwen3.5
+    const messages: Array<{ role: string; content: string }> = [];
+    if (system) messages.push({ role: 'system', content: system });
+    messages.push({ role: 'user', content: prompt });
+
     const body: Record<string, unknown> = {
       model: this.model,
-      prompt,
+      messages,
       stream: false,
+      think: false,
       options: { temperature: 0, num_predict: 512 },
     };
-    if (system) body.system = system;
 
-    const res = await fetch(`${this.endpoint}/api/generate`, {
+    const res = await fetch(`${this.endpoint}/api/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -48,11 +53,12 @@ export class OllamaAdapter implements LocalLLMAdapter {
 
     if (!res.ok) {
       const text = await res.text();
-      throw new Error(`Ollama generate failed: ${res.status} ${text}`);
+      throw new Error(`Ollama chat failed: ${res.status} ${text}`);
     }
 
-    const data = (await res.json()) as OllamaGenerateResponse;
-    return data.response.trim();
+    const data = (await res.json()) as { message?: { content?: string } };
+    const content = data.message?.content || '';
+    return stripThinkTags(content).trim();
   }
 
   async extractIntent(rawContent: string): Promise<string> {
@@ -65,7 +71,7 @@ ${truncated}
 Respond with ONLY the extracted goal, nothing else. Example format:
 "Fix the authentication timeout error in the /api/login endpoint"`;
 
-    const system = 'You are a precise intent extraction system. Output only the goal sentence, no explanation.';
+    const system = 'You are a precise intent extraction system. Output only the goal sentence, no explanation. /no_think';
 
     try {
       return await this.generate(prompt, system);
@@ -94,7 +100,7 @@ Respond with ONLY the extracted goal, nothing else. Example format:
       const batch = unknowns.slice(i, i + BATCH_SIZE);
       const promises = batch.map(async (item) => {
         const preview = item.chunk.slice(0, 1500);
-        const prompt = `Classify this text into exactly ONE category. Respond with ONLY the label.\nCategories: log, code, error, config, documentation, stacktrace, output, data, other\n\nTEXT:\n${preview}\n\nCATEGORY:`;
+        const prompt = `/no_think\nClassify this text into exactly ONE category. Respond with ONLY the label.\nCategories: log, code, error, config, documentation, stacktrace, output, data, other\n\nTEXT:\n${preview}\n\nCATEGORY:`;
         try {
           const label = (await this.generate(prompt)).toLowerCase().replace(/[^a-z]/g, '');
           item.label = valid.includes(label) ? label : 'other';
@@ -143,6 +149,10 @@ SUMMARY:`;
       return texts.map(() => new Array(384).fill(0));
     }
   }
+}
+
+function stripThinkTags(text: string): string {
+  return text.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
 }
 
 function heuristicClassify(text: string): string {
