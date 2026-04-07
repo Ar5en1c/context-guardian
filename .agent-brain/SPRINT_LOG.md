@@ -183,3 +183,33 @@ streaming), this means interception now WORKS instead of being bypassed.
 - 12 test files
 - Version bumped to 0.2.0
 - npm publish-ready with files array and prepublishOnly hook
+
+---
+
+## Real-World Testing (2026-04-07)
+
+### Live Ollama Integration Test
+- **Model**: qwen3:8b (already pulled, Ollama v0.x on macOS)
+- **Input**: 5,621 tokens (200 log lines + TypeScript code)
+- **Output**: 416 tokens after rewrite = **93% reduction**
+- **Intent extracted**: "Fix the database shard connection timeout error" (correct)
+- **Chunks**: 14 total, 13 classified as log, 1 as other
+- **Timing**: intent 87s, classify 53s, embed 3s, total 144s (qwen3:8b is slow; qwen3.5:4b would be ~2x faster)
+- **Passthrough**: small requests correctly forwarded to cloud API unchanged
+- **Session persistence**: SQLite (sql.js WASM, zero native deps) stores chunks across requests
+
+### MCP Integration with Factory Droid
+- Registered as HTTP MCP server: `droid mcp add context-guardian http://localhost:9120/mcp --type http`
+- 5 tools exposed: index_content, log_search, file_read, grep, summary
+- All tools tested live from Droid session:
+  - index_content: indexed auth logs + code, classified chunks
+  - grep: found JWT/ECONNRESET matches with context lines
+  - log_search: filtered by severity, returned relevant logs
+  - summary: generated accurate error summary with key details
+- **Key finding**: MCP mode works perfectly as a standalone RAG tool provider
+
+### Migration: better-sqlite3 -> sql.js
+- better-sqlite3 native module had NODE_MODULE_VERSION mismatch (141 vs 127)
+- Switched to sql.js (pure WASM SQLite): zero native deps, works on any Node/platform
+- Trade-off: no FTS5 support, using LIKE-based search instead (adequate for this use case)
+- All 75 tests pass with sql.js backend

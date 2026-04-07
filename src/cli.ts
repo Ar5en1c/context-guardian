@@ -79,6 +79,7 @@ program
 
     const { SessionStore } = await import('./index/session-store.js');
     const sessionStore = new SessionStore();
+    await sessionStore.ensureReady();
     sessionStore.pruneOldSessions(7);
     log('info', `Session: ${sessionStore.currentSessionId}`);
 
@@ -254,6 +255,7 @@ program
   .action(async (opts) => {
     const { SessionStore } = await import('./index/session-store.js');
     const store = new SessionStore();
+    await store.ensureReady();
     const sessions = store.listSessions(Number(opts.limit));
     store.close();
 

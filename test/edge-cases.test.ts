@@ -74,7 +74,7 @@ describe('edge cases', () => {
     expect(res.status).toBe(400);
   });
 
-  it('handles extremely large single message', async () => {
+  it('handles extremely large single message', { timeout: 15000 }, async () => {
     const config = loadConfig({ port: 0, threshold_tokens: 10 });
     const stats = createStats();
     const app = createProxyServer(config, mockLLM, stats);

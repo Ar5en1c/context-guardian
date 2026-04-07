@@ -36,16 +36,15 @@
   "license": "MIT",
   "dependencies": {
     "@hono/node-server": "^1.19.13",
-    "better-sqlite3": "^12.8.0",
     "chalk": "^5.4.1",
     "commander": "^13.1.0",
     "eventsource-parser": "^3.0.1",
     "gpt-tokenizer": "^2.8.1",
     "hono": "^4.7.6",
+    "sql.js": "^1.14.1",
     "zod": "^3.24.2"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.14.1",
     "tsx": "^4.19.3",
     "typescript": "^5.8.3",

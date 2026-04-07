@@ -1,41 +1,46 @@
-import Database from 'better-sqlite3';
+import initSqlJs, { type Database as SqlJsDatabase } from 'sql.js';
 import { resolve } from 'node:path';
-import { mkdirSync, existsSync } from 'node:fs';
+import { mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import type { Chunk } from './chunker.js';
 import { log } from '../display/logger.js';
 
 const DB_DIR = '.context-guardian';
 const DB_FILE = 'sessions.db';
 
-export interface SessionEntry {
-  id: number;
-  sessionId: string;
-  text: string;
-  label: string;
-  source: string;
-  embedding: string; // JSON-encoded number[]
-  createdAt: string;
+let sqlPromise: ReturnType<typeof initSqlJs> | null = null;
+
+function getSql() {
+  if (!sqlPromise) {
+    sqlPromise = initSqlJs();
+  }
+  return sqlPromise;
 }
 
 export class SessionStore {
-  private db: Database.Database;
+  private db!: import('sql.js').Database;
   private sessionId: string;
+  private dbPath: string;
+  private ready: Promise<void>;
 
   constructor(sessionId?: string, dbPath?: string) {
     this.sessionId = sessionId || generateSessionId();
-
     const dir = resolve(process.cwd(), DB_DIR);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-
-    const fullPath = dbPath || resolve(dir, DB_FILE);
-    this.db = new Database(fullPath);
-    this.db.pragma('journal_mode = WAL');
-    this.db.pragma('foreign_keys = ON');
-    this.init();
+    this.dbPath = dbPath || resolve(dir, DB_FILE);
+    this.ready = this.init();
   }
 
-  private init() {
-    this.db.exec(`
+  private async init() {
+    const SQL = await getSql();
+
+    if (existsSync(this.dbPath)) {
+      const buf = readFileSync(this.dbPath);
+      this.db = new SQL.Database(buf);
+    } else {
+      this.db = new SQL.Database();
+    }
+
+    this.db.run(`
       CREATE TABLE IF NOT EXISTS chunks (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         session_id TEXT NOT NULL,
@@ -44,40 +49,33 @@ export class SessionStore {
         source TEXT NOT NULL DEFAULT 'request',
         embedding TEXT NOT NULL DEFAULT '[]',
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_chunks_session ON chunks(session_id);
-      CREATE INDEX IF NOT EXISTS idx_chunks_label ON chunks(label);
+      )
     `);
-
-    // FTS5 virtual table for full-text search
-    this.db.exec(`
-      CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
-        text,
-        label,
-        content=chunks,
-        content_rowid=id,
-        tokenize='porter unicode61'
-      );
-
-      CREATE TRIGGER IF NOT EXISTS chunks_ai AFTER INSERT ON chunks BEGIN
-        INSERT INTO chunks_fts(rowid, text, label) VALUES (new.id, new.text, new.label);
-      END;
-
-      CREATE TRIGGER IF NOT EXISTS chunks_ad AFTER DELETE ON chunks BEGIN
-        INSERT INTO chunks_fts(chunks_fts, rowid, text, label) VALUES('delete', old.id, old.text, old.label);
-      END;
-    `);
-
-    this.db.exec(`
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_chunks_session ON chunks(session_id)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_chunks_label ON chunks(label)');
+    this.db.run(`
       CREATE TABLE IF NOT EXISTS sessions (
         id TEXT PRIMARY KEY,
         goal TEXT,
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         last_active TEXT NOT NULL DEFAULT (datetime('now')),
         request_count INTEGER NOT NULL DEFAULT 0
-      );
+      )
     `);
+    this.persist();
+  }
+
+  private persist() {
+    try {
+      const data = this.db.export();
+      writeFileSync(this.dbPath, Buffer.from(data));
+    } catch {
+      // never crash over persistence
+    }
+  }
+
+  async ensureReady() {
+    await this.ready;
   }
 
   get currentSessionId(): string {
@@ -85,88 +83,98 @@ export class SessionStore {
   }
 
   startSession(goal?: string) {
-    const stmt = this.db.prepare(`
-      INSERT OR REPLACE INTO sessions (id, goal, last_active, request_count)
-      VALUES (?, ?, datetime('now'),
-        COALESCE((SELECT request_count FROM sessions WHERE id = ?), 0) + 1
-      )
-    `);
-    stmt.run(this.sessionId, goal || null, this.sessionId);
+    this.db.run(
+      `INSERT OR REPLACE INTO sessions (id, goal, last_active, request_count)
+       VALUES (?, ?, datetime('now'),
+         COALESCE((SELECT request_count FROM sessions WHERE id = ?), 0) + 1
+       )`,
+      [this.sessionId, goal || null, this.sessionId],
+    );
+    this.persist();
   }
 
   addChunks(chunks: Chunk[], embeddings: number[][]) {
-    const stmt = this.db.prepare(`
-      INSERT INTO chunks (session_id, text, label, source, embedding)
-      VALUES (?, ?, ?, ?, ?)
-    `);
-
-    const insertMany = this.db.transaction((items: Array<{ chunk: Chunk; emb: number[] }>) => {
-      for (const { chunk, emb } of items) {
-        stmt.run(
+    this.db.run('BEGIN TRANSACTION');
+    try {
+      const stmt = this.db.prepare(
+        'INSERT INTO chunks (session_id, text, label, source, embedding) VALUES (?, ?, ?, ?, ?)',
+      );
+      for (let i = 0; i < chunks.length; i++) {
+        const c = chunks[i];
+        stmt.run([
           this.sessionId,
-          chunk.text,
-          chunk.label || 'other',
-          chunk.metadata.source || 'request',
-          JSON.stringify(emb),
-        );
+          c.text,
+          c.label || 'other',
+          c.metadata.source || 'request',
+          JSON.stringify(embeddings[i] || []),
+        ]);
       }
-    });
-
-    const items = chunks.map((c, i) => ({ chunk: c, emb: embeddings[i] || [] }));
-    insertMany(items);
+      stmt.free();
+      this.db.run('COMMIT');
+    } catch (err) {
+      this.db.run('ROLLBACK');
+      throw err;
+    }
+    this.persist();
     log('debug', `Persisted ${chunks.length} chunks to session ${this.sessionId}`);
   }
 
   searchFTS(query: string, limit = 10, sessionId?: string): Array<{ text: string; label: string; score: number }> {
-    const sid = sessionId || this.sessionId;
-    const sanitized = query.replace(/['"]/g, '').trim();
-    if (!sanitized) return [];
-
-    try {
-      const stmt = this.db.prepare(`
-        SELECT c.text, c.label, rank
-        FROM chunks_fts f
-        JOIN chunks c ON c.id = f.rowid
-        WHERE chunks_fts MATCH ?
-          AND c.session_id = ?
-        ORDER BY rank
-        LIMIT ?
-      `);
-      const rows = stmt.all(sanitized, sid, limit) as Array<{ text: string; label: string; rank: number }>;
-      return rows.map((r) => ({ text: r.text, label: r.label, score: -r.rank }));
-    } catch {
-      // FTS query syntax error, fall back to LIKE
-      return this.searchLike(query, limit, sid);
-    }
+    // sql.js doesn't support FTS5 out of the box, use LIKE-based search
+    return this.searchLike(query, limit, sessionId);
   }
 
   searchLike(query: string, limit = 10, sessionId?: string): Array<{ text: string; label: string; score: number }> {
     const sid = sessionId || this.sessionId;
-    const stmt = this.db.prepare(`
-      SELECT text, label FROM chunks
-      WHERE session_id = ? AND text LIKE ?
-      ORDER BY created_at DESC
-      LIMIT ?
-    `);
-    const rows = stmt.all(sid, `%${query}%`, limit) as Array<{ text: string; label: string }>;
-    return rows.map((r) => ({ text: r.text, label: r.label, score: 1.0 }));
+    const sanitized = query.replace(/['"]/g, '').trim();
+    if (!sanitized) return [];
+
+    const terms = sanitized.toLowerCase().split(/\s+/).filter(Boolean);
+    const stmt = this.db.prepare(
+      'SELECT text, label FROM chunks WHERE session_id = ? ORDER BY created_at DESC LIMIT 1000',
+    );
+    stmt.bind([sid]);
+
+    const results: Array<{ text: string; label: string; score: number }> = [];
+    while (stmt.step()) {
+      const row = stmt.getAsObject() as { text: string; label: string };
+      const lower = row.text.toLowerCase();
+      let hits = 0;
+      for (const t of terms) {
+        if (lower.includes(t)) hits++;
+      }
+      if (hits > 0) {
+        results.push({ text: row.text, label: row.label, score: hits / terms.length });
+      }
+    }
+    stmt.free();
+
+    results.sort((a, b) => b.score - a.score);
+    return results.slice(0, limit);
   }
 
   searchByLabel(label: string, limit = 20, sessionId?: string): Array<{ text: string; label: string }> {
     const sid = sessionId || this.sessionId;
-    const stmt = this.db.prepare(`
-      SELECT text, label FROM chunks
-      WHERE session_id = ? AND label = ?
-      ORDER BY created_at DESC
-      LIMIT ?
-    `);
-    return stmt.all(sid, label, limit) as Array<{ text: string; label: string }>;
+    const stmt = this.db.prepare(
+      'SELECT text, label FROM chunks WHERE session_id = ? AND label = ? ORDER BY created_at DESC LIMIT ?',
+    );
+    stmt.bind([sid, label, limit]);
+
+    const results: Array<{ text: string; label: string }> = [];
+    while (stmt.step()) {
+      results.push(stmt.getAsObject() as { text: string; label: string });
+    }
+    stmt.free();
+    return results;
   }
 
   getSessionChunkCount(sessionId?: string): number {
     const sid = sessionId || this.sessionId;
     const stmt = this.db.prepare('SELECT COUNT(*) as count FROM chunks WHERE session_id = ?');
-    const row = stmt.get(sid) as { count: number };
+    stmt.bind([sid]);
+    stmt.step();
+    const row = stmt.getAsObject() as { count: number };
+    stmt.free();
     return row.count;
   }
 
@@ -178,29 +186,35 @@ export class SessionStore {
       ORDER BY s.last_active DESC
       LIMIT ?
     `);
-    const rows = stmt.all(limit) as Array<{ id: string; goal: string | null; request_count: number; chunk_count: number; last_active: string }>;
-    return rows.map((r) => ({
-      id: r.id,
-      goal: r.goal,
-      requestCount: r.request_count,
-      chunkCount: r.chunk_count,
-      lastActive: r.last_active,
-    }));
+    stmt.bind([limit]);
+
+    const results: Array<{ id: string; goal: string | null; requestCount: number; chunkCount: number; lastActive: string }> = [];
+    while (stmt.step()) {
+      const r = stmt.getAsObject() as { id: string; goal: string | null; request_count: number; chunk_count: number; last_active: string };
+      results.push({
+        id: r.id,
+        goal: r.goal,
+        requestCount: r.request_count,
+        chunkCount: r.chunk_count,
+        lastActive: r.last_active,
+      });
+    }
+    stmt.free();
+    return results;
   }
 
   pruneOldSessions(maxAgeDays = 7) {
-    const stmt = this.db.prepare(`
-      DELETE FROM chunks WHERE session_id IN (
+    this.db.run(
+      `DELETE FROM chunks WHERE session_id IN (
         SELECT id FROM sessions WHERE last_active < datetime('now', ?)
-      )
-    `);
-    stmt.run(`-${maxAgeDays} days`);
-
-    const stmt2 = this.db.prepare(`DELETE FROM sessions WHERE last_active < datetime('now', ?)`);
-    const result = stmt2.run(`-${maxAgeDays} days`);
-    if (result.changes > 0) {
-      log('info', `Pruned ${result.changes} old sessions (>${maxAgeDays} days)`);
-    }
+      )`,
+      [`-${maxAgeDays} days`],
+    );
+    const result = this.db.run(
+      `DELETE FROM sessions WHERE last_active < datetime('now', ?)`,
+      [`-${maxAgeDays} days`],
+    );
+    this.persist();
   }
 
   close() {

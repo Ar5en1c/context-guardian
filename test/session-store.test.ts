@@ -11,10 +11,12 @@ function tempDb(): string {
 describe('SessionStore', () => {
   const dbs: string[] = [];
 
-  function createStore(sessionId?: string): SessionStore {
+  async function createStore(sessionId?: string): Promise<SessionStore> {
     const path = tempDb();
     dbs.push(path);
-    return new SessionStore(sessionId, path);
+    const store = new SessionStore(sessionId, path);
+    await store.ensureReady();
+    return store;
   }
 
   afterEach(() => {
@@ -24,13 +26,13 @@ describe('SessionStore', () => {
     dbs.length = 0;
   });
 
-  it('creates a session and stores chunks', () => {
-    const store = createStore('test-session');
+  it('creates a session and stores chunks', async () => {
+    const store = await createStore('test-session');
     store.startSession('Fix the auth bug');
     store.addChunks(
       [
-        { text: 'ERROR: auth timeout at login endpoint', label: 'error', metadata: { source: 'request' } },
-        { text: 'import { auth } from "./auth";', label: 'code', metadata: { source: 'request' } },
+        { id: '1', text: 'ERROR: auth timeout at login endpoint', label: 'error', startOffset: 0, endOffset: 36, metadata: { source: 'request' } },
+        { id: '2', text: 'import { auth } from "./auth";', label: 'code', startOffset: 37, endOffset: 66, metadata: { source: 'request' } },
       ],
       [[0.1, 0.2], [0.3, 0.4]],
     );
@@ -39,14 +41,14 @@ describe('SessionStore', () => {
     store.close();
   });
 
-  it('performs FTS5 full-text search', () => {
-    const store = createStore('fts-test');
+  it('performs keyword search across chunks', async () => {
+    const store = await createStore('search-test');
     store.startSession('Debug timeout');
     store.addChunks(
       [
-        { text: 'Connection timeout after 30 seconds on database pool', label: 'error', metadata: { source: 'log' } },
-        { text: 'User login successful for admin', label: 'log', metadata: { source: 'log' } },
-        { text: 'function handleTimeout() { retry(); }', label: 'code', metadata: { source: 'code' } },
+        { id: '1', text: 'Connection timeout after 30 seconds on database pool', label: 'error', startOffset: 0, endOffset: 53, metadata: { source: 'log' } },
+        { id: '2', text: 'User login successful for admin', label: 'log', startOffset: 54, endOffset: 85, metadata: { source: 'log' } },
+        { id: '3', text: 'function handleTimeout() { retry(); }', label: 'code', startOffset: 86, endOffset: 123, metadata: { source: 'code' } },
       ],
       [[0.1], [0.2], [0.3]],
     );
@@ -57,14 +59,14 @@ describe('SessionStore', () => {
     store.close();
   });
 
-  it('searches by label', () => {
-    const store = createStore('label-test');
+  it('searches by label', async () => {
+    const store = await createStore('label-test');
     store.startSession();
     store.addChunks(
       [
-        { text: 'some error log', label: 'error', metadata: { source: 'request' } },
-        { text: 'some code', label: 'code', metadata: { source: 'request' } },
-        { text: 'another error', label: 'error', metadata: { source: 'request' } },
+        { id: '1', text: 'some error log', label: 'error', startOffset: 0, endOffset: 14, metadata: { source: 'request' } },
+        { id: '2', text: 'some code', label: 'code', startOffset: 15, endOffset: 24, metadata: { source: 'request' } },
+        { id: '3', text: 'another error', label: 'error', startOffset: 25, endOffset: 38, metadata: { source: 'request' } },
       ],
       [[], [], []],
     );
@@ -75,14 +77,10 @@ describe('SessionStore', () => {
     store.close();
   });
 
-  it('lists sessions', () => {
-    const store = createStore('list-test-1');
+  it('lists sessions', async () => {
+    const store = await createStore('list-test-1');
     store.startSession('First goal');
-
-    // Same DB, different session
-    const store2 = new SessionStore('list-test-2', (store as unknown as { db: { name: string } }).db?.name);
-    // Actually we need the same DB path -- let's just add another session manually
-    store.addChunks([{ text: 'chunk1', label: 'other', metadata: { source: 'req' } }], [[]]);
+    store.addChunks([{ id: '1', text: 'chunk1', label: 'other', startOffset: 0, endOffset: 6, metadata: { source: 'req' } }], [[]]);
 
     const sessions = store.listSessions();
     expect(sessions.length).toBeGreaterThanOrEqual(1);
@@ -90,26 +88,23 @@ describe('SessionStore', () => {
     store.close();
   });
 
-  it('falls back to LIKE search on bad FTS query', () => {
-    const store = createStore('fallback-test');
-    store.startSession();
-    store.addChunks(
-      [{ text: 'the quick brown fox', label: 'other', metadata: { source: 'req' } }],
-      [[]],
-    );
-
-    // Malformed FTS query should not crash
-    const results = store.searchFTS('OR AND NOT');
-    // May return empty or fallback results, but should not throw
-    expect(Array.isArray(results)).toBe(true);
-    store.close();
-  });
-
-  it('handles empty search gracefully', () => {
-    const store = createStore('empty-search');
+  it('handles empty search gracefully', async () => {
+    const store = await createStore('empty-search');
     store.startSession();
     const results = store.searchFTS('');
     expect(results).toEqual([]);
+    store.close();
+  });
+
+  it('handles special characters in search', async () => {
+    const store = await createStore('special-char-test');
+    store.startSession();
+    store.addChunks(
+      [{ id: '1', text: 'error: can\'t connect to "database"', label: 'error', startOffset: 0, endOffset: 33, metadata: { source: 'log' } }],
+      [[]],
+    );
+    const results = store.searchFTS('database');
+    expect(results.length).toBe(1);
     store.close();
   });
 });
