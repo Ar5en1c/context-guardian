@@ -5,6 +5,31 @@ import { OllamaAdapter } from './local-llm/ollama.js';
 import { createStats, printBanner } from './display/dashboard.js';
 import { log, setVerbose } from './display/logger.js';
 
+async function ensureModelPulled(endpoint: string, model: string) {
+  try {
+    const res = await fetch(`${endpoint}/api/show`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: model }),
+    });
+    if (res.ok) return;
+
+    log('info', `Model ${model} not found locally. Pulling...`);
+    const pullRes = await fetch(`${endpoint}/api/pull`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: model, stream: false }),
+    });
+    if (pullRes.ok) {
+      log('info', `Model ${model} pulled successfully.`);
+    } else {
+      log('warn', `Failed to pull ${model}: ${pullRes.status}. Run manually: ollama pull ${model}`);
+    }
+  } catch {
+    log('warn', `Could not check/pull model ${model}. Run manually: ollama pull ${model}`);
+  }
+}
+
 const program = new Command();
 
 program
@@ -47,6 +72,9 @@ program
     if (!ollamaReady) {
       log('warn', `Ollama not detected at ${config.local_llm.endpoint}. Interception will use fallback behavior.`);
       log('warn', 'Start Ollama and run: ollama pull ' + config.local_llm.model);
+    } else {
+      await ensureModelPulled(config.local_llm.endpoint, config.local_llm.model);
+      await ensureModelPulled(config.local_llm.endpoint, config.local_llm.embed_model);
     }
 
     const stats = createStats();
@@ -58,6 +86,37 @@ program
     serve({ fetch: app.fetch, port: config.port }, (info) => {
       log('info', `Proxy listening on http://localhost:${info.port}`);
     });
+  });
+
+program
+  .command('init')
+  .description('Generate a guardian.config.json in the current directory')
+  .action(async () => {
+    const { writeFileSync, existsSync } = await import('node:fs');
+    const path = 'guardian.config.json';
+    if (existsSync(path)) {
+      process.stderr.write(`${path} already exists. Delete it first to regenerate.\n`);
+      process.exit(1);
+    }
+    const defaultConfig = {
+      port: 9119,
+      threshold_tokens: 8000,
+      context_budget: 4000,
+      local_llm: {
+        backend: 'ollama',
+        model: 'qwen3.5:4b',
+        endpoint: 'http://localhost:11434',
+        embed_model: 'nomic-embed-text',
+      },
+      cloud: {
+        openai_base: 'https://api.openai.com/v1',
+        anthropic_base: 'https://api.anthropic.com',
+      },
+      tools: ['log_search', 'file_read', 'grep', 'summary'],
+      verbose: false,
+    };
+    writeFileSync(path, JSON.stringify(defaultConfig, null, 2) + '\n');
+    process.stderr.write(`Created ${path}\n`);
   });
 
 program

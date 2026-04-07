@@ -67,6 +67,7 @@ export async function forwardToCloud(
   cloudBase: string,
   apiKey: string,
   request: OpenAIRequest,
+  extraHeaders: Record<string, string> = {},
 ): Promise<Response> {
   const url = `${cloudBase.replace(/\/$/, '')}/chat/completions`;
 
@@ -75,6 +76,7 @@ export async function forwardToCloud(
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     'Authorization': `Bearer ${apiKey}`,
+    ...extraHeaders,
   };
 
   return fetch(url, {

@@ -3,3 +3,4 @@ dist/
 *.tsbuildinfo
 .DS_Store
 guardian.config.json
+.context-guardian/

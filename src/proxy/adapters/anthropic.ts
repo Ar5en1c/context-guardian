@@ -10,6 +10,28 @@ export interface AnthropicRequest {
   [key: string]: unknown;
 }
 
+export interface ToolUseBlock {
+  type: 'tool_use';
+  id: string;
+  name: string;
+  input: unknown;
+}
+
+export interface ToolResultBlock {
+  type: 'tool_result';
+  tool_use_id: string;
+  content: string;
+}
+
+export interface AnthropicResponse {
+  id: string;
+  type: string;
+  role: string;
+  content: Array<{ type: string; text?: string; id?: string; name?: string; input?: unknown }>;
+  stop_reason: string | null;
+  usage?: { input_tokens: number; output_tokens: number };
+}
+
 export function isAnthropicFormat(body: unknown): body is AnthropicRequest {
   if (!body || typeof body !== 'object') return false;
   const b = body as Record<string, unknown>;
@@ -63,10 +85,36 @@ export function buildForwardRequest(
   return forwarded;
 }
 
+export function hasToolUse(response: AnthropicResponse): boolean {
+  return response.stop_reason === 'tool_use' ||
+    response.content?.some((b) => b.type === 'tool_use') === true;
+}
+
+export function extractToolUse(response: AnthropicResponse): ToolUseBlock[] {
+  return (response.content || [])
+    .filter((b): b is ToolUseBlock => b.type === 'tool_use' && typeof b.id === 'string' && typeof b.name === 'string')
+    .map((b) => ({ type: 'tool_use' as const, id: b.id!, name: b.name!, input: b.input }));
+}
+
+export function appendToolResults(
+  request: AnthropicRequest,
+  assistantResponse: AnthropicResponse,
+  toolResults: ToolResultBlock[],
+): AnthropicRequest {
+  const updatedMessages = [
+    ...request.messages,
+    { role: 'assistant', content: assistantResponse.content },
+    { role: 'user', content: toolResults },
+  ];
+
+  return { ...request, messages: updatedMessages };
+}
+
 export async function forwardToCloud(
   cloudBase: string,
   apiKey: string,
   request: AnthropicRequest,
+  extraHeaders: Record<string, string> = {},
 ): Promise<Response> {
   const url = `${cloudBase.replace(/\/$/, '')}/v1/messages`;
 
@@ -78,6 +126,7 @@ export async function forwardToCloud(
       'Content-Type': 'application/json',
       'x-api-key': apiKey,
       'anthropic-version': '2023-06-01',
+      ...extraHeaders,
     },
     body: JSON.stringify(request),
   });

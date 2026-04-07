@@ -76,26 +76,33 @@ Respond with ONLY the extracted goal, nothing else. Example format:
   }
 
   async classifyChunks(chunks: string[]): Promise<Array<{ label: string; chunk: string }>> {
-    const results: Array<{ label: string; chunk: string }> = [];
+    const valid = ['log', 'code', 'error', 'config', 'documentation', 'stacktrace', 'output', 'data', 'other'];
+    const toProcess = chunks.slice(0, 30);
 
-    for (const chunk of chunks.slice(0, 20)) {
-      const preview = chunk.slice(0, 2000);
-      const prompt = `Classify this text chunk into exactly ONE category. Respond with ONLY the category label.
+    // First try fast heuristic classification (no LLM call needed)
+    const results: Array<{ label: string; chunk: string }> = toProcess.map((chunk) => ({
+      label: heuristicClassify(chunk),
+      chunk,
+    }));
 
-Categories: log, code, error, config, documentation, stacktrace, output, data, other
+    // Only call LLM for chunks classified as 'other' by heuristic
+    const unknowns = results.filter((r) => r.label === 'other');
+    if (unknowns.length === 0) return results;
 
-TEXT:
-${preview}
-
-CATEGORY:`;
-
-      try {
-        const label = (await this.generate(prompt)).toLowerCase().replace(/[^a-z]/g, '');
-        const valid = ['log', 'code', 'error', 'config', 'documentation', 'stacktrace', 'output', 'data', 'other'];
-        results.push({ label: valid.includes(label) ? label : 'other', chunk });
-      } catch {
-        results.push({ label: 'other', chunk });
-      }
+    const BATCH_SIZE = 5;
+    for (let i = 0; i < unknowns.length; i += BATCH_SIZE) {
+      const batch = unknowns.slice(i, i + BATCH_SIZE);
+      const promises = batch.map(async (item) => {
+        const preview = item.chunk.slice(0, 1500);
+        const prompt = `Classify this text into exactly ONE category. Respond with ONLY the label.\nCategories: log, code, error, config, documentation, stacktrace, output, data, other\n\nTEXT:\n${preview}\n\nCATEGORY:`;
+        try {
+          const label = (await this.generate(prompt)).toLowerCase().replace(/[^a-z]/g, '');
+          item.label = valid.includes(label) ? label : 'other';
+        } catch {
+          // keep 'other'
+        }
+      });
+      await Promise.all(promises);
     }
 
     return results;
@@ -136,4 +143,26 @@ SUMMARY:`;
       return texts.map(() => new Array(384).fill(0));
     }
   }
+}
+
+function heuristicClassify(text: string): string {
+  const lower = text.toLowerCase();
+  const lines = text.split('\n').slice(0, 20);
+
+  if (/^\s*(error|err|fatal|panic|exception)/im.test(text)) return 'error';
+  if (/^traceback|^\s+at\s+|\.go:\d+|\.ts:\d+|\.py:\d+|\.java:\d+|File ".*", line \d+/im.test(text)) return 'stacktrace';
+
+  const logPatterns = /\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}|^\[(info|warn|error|debug)\]|^(INFO|WARN|ERROR|DEBUG)\s/m;
+  if (logPatterns.test(text)) return 'log';
+
+  const codePatterns = /^(import |from |export |const |let |var |function |class |def |fn |pub |async |interface |type )/m;
+  if (codePatterns.test(text) || (text.includes('{') && text.includes('}') && text.includes(';'))) return 'code';
+
+  if (/^\s*[\[{]/.test(text.trim()) && /[}\]]\s*$/.test(text.trim())) return 'config';
+  if (/^\s*(#+ |---|\*\*|> )/.test(text)) return 'documentation';
+
+  const outputPatterns = /^\$\s|^>\s|^root@|^user@|^\+\+\+|^---/m;
+  if (outputPatterns.test(text)) return 'output';
+
+  return 'other';
 }
