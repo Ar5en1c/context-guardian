@@ -1,6 +1,6 @@
 import chalk from 'chalk';
 
-export type LogLevel = 'info' | 'warn' | 'error' | 'debug' | 'intercept' | 'passthrough';
+export type LogLevel = 'info' | 'warn' | 'error' | 'debug' | 'intercept' | 'passthrough' | 'compact';
 
 let verbose = false;
 
@@ -22,6 +22,7 @@ export function log(level: LogLevel, msg: string, meta?: Record<string, unknown>
     debug: chalk.gray('[debug]'),
     intercept: chalk.magenta('[intercept]'),
     passthrough: chalk.green('[pass]'),
+    compact: chalk.cyan('[compact]'),
   };
 
   const line = `${chalk.dim(ts())} ${prefix[level]} ${msg}`;

@@ -14,6 +14,9 @@ import type { Stats } from '../display/dashboard.js';
 import { printStats } from '../display/dashboard.js';
 import { SessionStore } from '../index/session-store.js';
 
+import { countTokens } from './interceptor.js';
+import { shouldAutoCompact, autoCompact } from './compaction.js';
+
 import '../tools/log-search.js';
 import '../tools/file-read.js';
 import '../tools/grep.js';
@@ -82,6 +85,7 @@ async function executeToolCalls(
   toolCalls: openai.OpenAIToolCall[],
   store: VectorStore,
   llm: LocalLLMAdapter,
+  sessionStore?: SessionStore,
 ): Promise<Map<string, string>> {
   const results = new Map<string, string>();
   const promises = toolCalls.map(async (tc) => {
@@ -95,6 +99,13 @@ async function executeToolCalls(
       const result = await tool.handler(args, { store, llm });
       results.set(tc.id, result);
       log('debug', `Tool ${tc.function.name} returned ${result.length} chars`);
+      // Track tool result in session store for hot-tail / cold-storage compaction
+      if (sessionStore) {
+        try {
+          const query = args.query || args.pattern || args.topic || '';
+          sessionStore.addToolResult(tc.function.name, String(query), result, countTokens(result));
+        } catch { /* non-critical */ }
+      }
     } catch (err) {
       results.set(tc.id, `Error: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -179,7 +190,7 @@ async function handleOpenAIRequest(
       const toolCalls = openai.extractToolCalls(responseData);
       log('intercept', `Tool round ${round + 1}: ${toolCalls.map((t) => t.function.name).join(', ')}`);
 
-      const results = await executeToolCalls(toolCalls, store, llm);
+      const results = await executeToolCalls(toolCalls, store, llm, sessionStore);
       const toolResultMsgs = openai.buildToolResultMessages(toolCalls, results);
 
       currentMessages = [

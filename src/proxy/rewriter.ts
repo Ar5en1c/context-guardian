@@ -5,6 +5,9 @@ import { getToolDefinitions, toOpenAIToolFormat } from '../tools/registry.js';
 import { log } from '../display/logger.js';
 import { Timer } from '../display/timing.js';
 import { countTokens } from './interceptor.js';
+import { extractEntities } from '../index/entity-extractor.js';
+import type { SessionStore } from '../index/session-store.js';
+import { shouldAutoCompact, autoCompact, microcompactToolResults } from './compaction.js';
 
 export interface RewriteResult {
   messages: Array<{ role: string; content: string }>;
@@ -19,6 +22,7 @@ export interface RewriteResult {
     chunking: number;
     classification: number;
     embedding: number;
+    entity: number;
     total: number;
   };
 }
@@ -26,7 +30,7 @@ export interface RewriteResult {
 import type { Chunk } from '../index/chunker.js';
 
 export interface RewriteOptions {
-  sessionStore?: { addChunks: (chunks: Chunk[], embeddings: number[][]) => void; startSession: (goal?: string) => void };
+  sessionStore?: SessionStore;
 }
 
 export async function rewriteRequest(
@@ -41,6 +45,7 @@ export async function rewriteRequest(
   const timer = new Timer();
   timer.mark('start');
   const inputTokens = countTokens(rawContent);
+  const ss = options?.sessionStore;
 
   timer.mark('intentStart');
   log('intercept', `Extracting intent from ${inputTokens} tokens...`);
@@ -73,17 +78,28 @@ export async function rewriteRequest(
   store.addBatch(chunks, embeddings);
   timer.measure('embedding', 'embedStart');
 
+  // Entity extraction (heuristic, no LLM call -- fast)
+  timer.mark('entityStart');
+  const entities = extractEntities(rawContent);
+  timer.measure('entity', 'entityStart');
+
   // Persist to session store for cross-request memory
-  if (options?.sessionStore) {
+  if (ss) {
     try {
-      options.sessionStore.startSession(goal);
-      options.sessionStore.addChunks(chunks, embeddings);
+      ss.startSession(goal);
+      ss.addChunks(chunks, embeddings);
+      // Update core memory with this request's goal
+      ss.updateCoreMemory({ goal });
+      // Persist extracted entities
+      if (entities.length > 0) {
+        ss.addEntities(entities.map((e) => ({ type: e.type, value: e.value })));
+      }
     } catch {
       // never crash the proxy over persistence
     }
   }
 
-  log('intercept', `Indexed ${chunks.length} chunks. Labels: ${summarizeLabels(chunks.map((c) => c.label))}`);
+  log('intercept', `Indexed ${chunks.length} chunks (${entities.length} entities). Labels: ${summarizeLabels(chunks.map((c) => c.label))}`);
 
   // Relevance scoring: embed the goal and find top-K most relevant chunks
   let relevantChunks = chunks;
@@ -100,7 +116,16 @@ export async function rewriteRequest(
     // Fall back to all chunks
   }
 
-  const systemPrompt = buildSystemPrompt(goal, relevantChunks, enabledTools);
+  // Load session memory block (core memory from previous requests)
+  const coreMemoryBlock = ss ? ss.formatCoreMemoryBlock() : '';
+  const entityHints = ss ? ss.formatEntityHints() : '';
+
+  // Microcompaction: freeze old tool results, keep hot tail
+  if (ss) {
+    try { microcompactToolResults(ss); } catch { /* non-critical */ }
+  }
+
+  const systemPrompt = buildSystemPrompt(goal, relevantChunks, enabledTools, coreMemoryBlock, entityHints);
   const userPrompt = buildUserPrompt(goal, relevantChunks);
 
   const toolDefs = getToolDefinitions(enabledTools);
@@ -141,6 +166,7 @@ export async function rewriteRequest(
       chunking: timer.get('chunking'),
       classification: timer.get('classification'),
       embedding: timer.get('embedding'),
+      entity: timer.get('entity'),
       total: timer.get('total'),
     },
   };
@@ -150,6 +176,8 @@ function buildSystemPrompt(
   goal: string,
   chunks: Array<{ label: string }>,
   enabledTools: string[],
+  coreMemoryBlock = '',
+  entityHints = '',
 ): string {
   const labels = summarizeLabels(chunks.map((c) => c.label));
   const hasErrors = chunks.some((c) => c.label === 'error' || c.label === 'stacktrace');
@@ -183,16 +211,19 @@ function buildSystemPrompt(
 3. Finally: complete the objective based on findings.`;
   }
 
+  // Build session context sections
+  const sessionContext = [coreMemoryBlock, entityHints].filter(Boolean).join('\n\n');
+
   return `CONTEXT GUARDIAN INSTRUCTIONS:
 OBJECTIVE: ${goal}
-
+${sessionContext ? `\n${sessionContext}\n` : ''}
 The original request contained ${chunks.length} chunks of raw data (${labels}) that have been indexed locally. You MUST use tools to retrieve specific information -- do NOT ask the user to re-paste anything.
 
 ${strategy}
 
 RULES:
 - Use tools to fetch data. Do not guess or hallucinate content.
-- Be specific in tool queries. Use exact error messages, function names, or patterns.
+- Be specific in tool queries. Use exact error messages, function names, or patterns.${entityHints ? '\n- Use the ENTITY HINTS above as precise search queries for grep and log_search.' : ''}
 - After gathering evidence, provide a concrete, actionable response.
 - Available tools: ${enabledTools.join(', ')}`;
 }
