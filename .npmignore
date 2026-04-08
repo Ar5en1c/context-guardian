@@ -1,5 +1,6 @@
 src/
 test/
+benchmark/
 .agent-brain/
 .context-guardian/
 *.ts
