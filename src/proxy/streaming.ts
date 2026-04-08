@@ -116,11 +116,18 @@ export function parseSSEStream(
 ): void {
   const reader = body.getReader();
   const decoder = new TextDecoder();
+  let doneEmitted = false;
+
+  const emitDone = () => {
+    if (doneEmitted) return;
+    doneEmitted = true;
+    onDone();
+  };
 
   const parser = createParser({
     onEvent(event: EventSourceMessage) {
       if (event.data === '[DONE]') {
-        onDone();
+        emitDone();
         return;
       }
       onEvent(event.data);
@@ -135,7 +142,8 @@ export function parseSSEStream(
         parser.feed(decoder.decode(value, { stream: true }));
       }
     } finally {
-      onDone();
+      reader.releaseLock();
+      emitDone();
     }
   })();
 }

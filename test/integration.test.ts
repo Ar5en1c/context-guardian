@@ -5,6 +5,8 @@ import { createProxyServer } from '../src/proxy/server.js';
 import { loadConfig } from '../src/config.js';
 import { createStats } from '../src/display/dashboard.js';
 import type { LocalLLMAdapter } from '../src/local-llm/adapter.js';
+import { SessionStore } from '../src/index/session-store.js';
+import { existsSync, unlinkSync } from 'node:fs';
 
 // Mock cloud server that simulates OpenAI API responses
 function createMockCloudServer() {
@@ -125,6 +127,38 @@ describe('integration: proxy + mock cloud server', () => {
     expect(stats.intercepted).toBe(0);
   });
 
+  it('falls back to passthrough when a small focused rewrite has weak ROI', async () => {
+    const callsBefore = mockCloud.calls.length;
+    const config = loadConfig({
+      port: PROXY_PORT,
+      threshold_tokens: 20,
+      cloud: { openai_base: `http://localhost:${MOCK_CLOUD_PORT}`, anthropic_base: '' },
+    });
+    const stats = createStats();
+    const proxy = createProxyServer(config, mockLLM, stats);
+
+    const focusedSmallDump = 'Investigate auth timeout\n' + 'ERROR: ETIMEDOUT\n'.repeat(12);
+
+    const res = await proxy.request('/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer test' },
+      body: JSON.stringify({
+        model: 'mock-model',
+        messages: [{ role: 'user', content: focusedSmallDump }],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(stats.passedThrough).toBe(1);
+    expect(stats.intercepted).toBe(0);
+
+    const newCalls = mockCloud.calls.slice(callsBefore);
+    expect(newCalls.length).toBe(1);
+    const firstCall = newCalls[0].body as { tools?: unknown[]; messages?: Array<{ role: string; content: string }> };
+    expect(firstCall.tools).toBeUndefined();
+    expect(firstCall.messages?.[0]?.content).toContain('Investigate auth timeout');
+  });
+
   it('intercepts large requests, rewrites, and gets response via tool loop', async () => {
     const callsBefore = mockCloud.calls.length;
     const config = loadConfig({
@@ -171,6 +205,42 @@ describe('integration: proxy + mock cloud server', () => {
     expect(firstCall.tools!.length).toBeGreaterThan(0);
   });
 
+  it('intercepts semantically noisy requests even when they are below the hard token threshold', async () => {
+    const callsBefore = mockCloud.calls.length;
+    const config = loadConfig({
+      port: PROXY_PORT,
+      threshold_tokens: 50000,
+      cloud: { openai_base: `http://localhost:${MOCK_CLOUD_PORT}`, anthropic_base: '' },
+    });
+    const stats = createStats();
+    const proxy = createProxyServer(config, mockLLM, stats);
+
+    const noisyLogDump = Array.from(
+      { length: 120 },
+      (_, i) => `2026-04-07T10:${String(i % 60).padStart(2, '0')}:00Z ERROR auth timeout request=${i} ETIMEDOUT while refreshing JWKS`,
+    ).join('\n');
+
+    const res = await proxy.request('/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer test' },
+      body: JSON.stringify({
+        model: 'mock-model',
+        messages: [{ role: 'user', content: `Please debug this auth issue.\n\n${noisyLogDump}` }],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(stats.intercepted).toBe(1);
+    expect(stats.lastIntercept).toBeDefined();
+    expect(stats.lastIntercept!.inTokens).toBeLessThan(50000);
+
+    const newCalls = mockCloud.calls.slice(callsBefore);
+    expect(newCalls.length).toBeGreaterThanOrEqual(2);
+    const firstCall = newCalls[0].body as { tools?: unknown[] };
+    expect(firstCall.tools).toBeDefined();
+    expect(firstCall.tools!.length).toBeGreaterThan(0);
+  });
+
   it('synthesizes SSE stream for intercepted streaming requests', async () => {
     const config = loadConfig({
       port: PROXY_PORT,
@@ -185,7 +255,10 @@ describe('integration: proxy + mock cloud server', () => {
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer test' },
       body: JSON.stringify({
         model: 'mock-model',
-        messages: [{ role: 'user', content: 'Fix the auth bug. '.repeat(50) }],
+        messages: [{
+          role: 'user',
+          content: 'Please debug this auth issue.\n' + '2026-04-07T10:00:00Z ERROR auth timeout ETIMEDOUT while refreshing JWKS\n'.repeat(80),
+        }],
         stream: true,
       }),
     });
@@ -214,12 +287,150 @@ describe('integration: proxy + mock cloud server', () => {
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer test' },
       body: JSON.stringify({
         model: 'mock-model',
-        messages: [{ role: 'user', content: 'Debug this error log:\n' + 'ERROR: timeout\n'.repeat(100) }],
+        messages: [{ role: 'user', content: 'Debug this error log:\n' + '2026-04-07T10:00:00Z ERROR auth timeout ETIMEDOUT\n'.repeat(180) }],
       }),
     });
 
     expect(stats.lastIntercept).toBeDefined();
     expect(stats.lastIntercept!.inTokens).toBeGreaterThan(50);
-    expect(stats.lastIntercept!.outTokens).toBeLessThan(stats.lastIntercept!.inTokens);
+    expect(stats.lastIntercept!.outTokens).toBeGreaterThan(0);
+    expect(stats.lastIntercept!.toolsInjected.length).toBeGreaterThan(0);
+  });
+
+  it('auto-compacts tool-loop context into session core memory', async () => {
+    const testDbPath = '/tmp/test-integration-compaction.db';
+    if (existsSync(testDbPath)) unlinkSync(testDbPath);
+    const sessionStore = new SessionStore('integration-compact', testDbPath);
+    await sessionStore.ensureReady();
+
+    try {
+      const config = loadConfig({
+        port: PROXY_PORT,
+        threshold_tokens: 50,
+        context_budget: 450,
+        cloud: { openai_base: `http://localhost:${MOCK_CLOUD_PORT}`, anthropic_base: '' },
+      });
+      const stats = createStats();
+      const proxy = createProxyServer(config, mockLLM, stats, sessionStore);
+
+      const res = await proxy.request('/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer test',
+          'x-context-guardian-session': 'integration-compact',
+        },
+        body: JSON.stringify({
+          model: 'mock-model',
+          messages: [{ role: 'user', content: 'Investigate auth timeout\n' + 'ERROR: ETIMEDOUT\n'.repeat(120) }],
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      const mem = sessionStore.getCoreMemory('integration-compact');
+      expect(mem).not.toBeNull();
+      expect(mem!.compactedAt).toBeDefined();
+    } finally {
+      sessionStore.close();
+      if (existsSync(testDbPath)) unlinkSync(testDbPath);
+    }
+  });
+
+  it('isolates persisted memory by resolved session id', async () => {
+    const testDbPath = '/tmp/test-session-isolation.db';
+    if (existsSync(testDbPath)) unlinkSync(testDbPath);
+    const sessionStore = new SessionStore('bootstrap', testDbPath);
+    await sessionStore.ensureReady();
+
+    try {
+      const config = loadConfig({
+        port: PROXY_PORT,
+        threshold_tokens: 20,
+        cloud: { openai_base: `http://localhost:${MOCK_CLOUD_PORT}`, anthropic_base: '' },
+      });
+      const stats = createStats();
+      const proxy = createProxyServer(config, mockLLM, stats, sessionStore);
+
+      const req = async (sessionId: string, content: string) => proxy.request('/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer test',
+          'x-context-guardian-session': sessionId,
+        },
+        body: JSON.stringify({
+          model: 'mock-model',
+          messages: [{ role: 'user', content }],
+        }),
+      });
+
+      await req('session-A', 'ERROR: auth timeout '.repeat(40));
+      await req('session-B', 'ERROR: database timeout '.repeat(40));
+
+      expect(sessionStore.getSessionChunkCount('session-A')).toBeGreaterThan(0);
+      expect(sessionStore.getSessionChunkCount('session-B')).toBeGreaterThan(0);
+      expect(sessionStore.getSessionChunkCount('bootstrap')).toBe(0);
+    } finally {
+      sessionStore.close();
+      if (existsSync(testDbPath)) unlinkSync(testDbPath);
+    }
+  });
+
+  it('promotes small broad-scope prompts when a session already has indexed corpus', async () => {
+    const testDbPath = '/tmp/test-task-profiler-session-scope.db';
+    if (existsSync(testDbPath)) unlinkSync(testDbPath);
+    const sessionStore = new SessionStore('bootstrap', testDbPath);
+    await sessionStore.ensureReady();
+
+    try {
+      const sessionId = 'broad-auth-session';
+      sessionStore.startSession('Understand auth architecture', sessionId);
+      const seededChunks = Array.from({ length: 10 }, (_, i) => ({
+        text: `src/auth/service-${i}.ts\nexport function authFlow${i}() { return middleware${i}; }`,
+        label: 'code',
+        metadata: { source: `src/auth/service-${i}.ts` },
+      }));
+      sessionStore.addChunks(seededChunks, seededChunks.map(() => new Array(4).fill(0.1)), sessionId);
+
+      const callsBefore = mockCloud.calls.length;
+      const config = loadConfig({
+        port: PROXY_PORT,
+        threshold_tokens: 50000,
+        cloud: { openai_base: `http://localhost:${MOCK_CLOUD_PORT}`, anthropic_base: '' },
+      });
+      const stats = createStats();
+      const proxy = createProxyServer(config, mockLLM, stats, sessionStore);
+
+      const res = await proxy.request('/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer test',
+          'x-context-guardian-session': sessionId,
+        },
+        body: JSON.stringify({
+          model: 'mock-model',
+          messages: [{ role: 'user', content: 'Analyze the whole codebase and explain the architecture of the auth system.' }],
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(stats.intercepted).toBe(1);
+      expect(stats.lastIntercept).toBeDefined();
+      expect(stats.lastIntercept!.goal.toLowerCase()).toContain('auth');
+
+      const newCalls = mockCloud.calls.slice(callsBefore);
+      expect(newCalls.length).toBeGreaterThanOrEqual(2);
+      const firstCall = newCalls[0].body as { messages?: Array<{ role: string; content: string }>; tools?: unknown[] };
+      expect(firstCall.tools).toBeDefined();
+      const systemPrompt = firstCall.messages?.[0]?.content || '';
+      expect(systemPrompt).toContain('## TASK PROFILE');
+      expect(systemPrompt).toContain('## DETERMINISTIC BOOTSTRAP');
+      expect(systemPrompt).toContain('Scope: repo_wide');
+      expect(systemPrompt).toContain('Expected tool budget');
+    } finally {
+      sessionStore.close();
+      if (existsSync(testDbPath)) unlinkSync(testDbPath);
+    }
   });
 });

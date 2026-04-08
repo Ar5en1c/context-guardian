@@ -4,15 +4,78 @@ import { chunkText } from '../index/chunker.js';
 import { getTool, getAllToolNames, getToolDefinitions } from '../tools/registry.js';
 import type { LocalLLMAdapter } from '../local-llm/adapter.js';
 import { log } from '../display/logger.js';
+import { renderDashboardHTML } from '../display/dashboard-html.js';
+import { countTokens } from '../proxy/interceptor.js';
 
 import '../tools/log-search.js';
 import '../tools/file-read.js';
 import '../tools/grep.js';
 import '../tools/summary.js';
+import '../tools/repo-map.js';
+import '../tools/file-tree.js';
+import '../tools/symbol-find.js';
+import '../tools/git-diff.js';
+import '../tools/test-failures.js';
+import '../tools/run-checks.js';
 
 export function createMCPServer(llm: LocalLLMAdapter) {
   const app = new Hono();
   const store = new VectorStore();
+  const startedAt = Date.now();
+  let toolCalls = 0;
+  const mcpStats = {
+    requests: 0,
+    retrievalCalls: 0,
+    indexCalls: 0,
+    indexedTokens: 0,
+    returnedTokens: 0,
+    tokensSaved: 0,
+  };
+
+  app.get('/', (c) => {
+    const html = renderDashboardHTML({
+      mode: 'mcp',
+      version: '0.3.0',
+      uptime: (Date.now() - startedAt) / 1000,
+      intercepted: mcpStats.retrievalCalls,
+      passedThrough: mcpStats.indexCalls,
+      tokensSaved: mcpStats.tokensSaved,
+      storeSize: store.size,
+      toolCalls,
+      sessions: [],
+    });
+    return c.html(html);
+  });
+
+  app.get('/health', (c) => {
+    return c.json({
+      status: 'ok',
+      version: '0.3.0',
+      storeSize: store.size,
+      toolCalls,
+      uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000),
+      requests: mcpStats.requests,
+      retrievalCalls: mcpStats.retrievalCalls,
+      indexCalls: mcpStats.indexCalls,
+      indexedTokens: mcpStats.indexedTokens,
+      returnedTokens: mcpStats.returnedTokens,
+      tokensSaved: mcpStats.tokensSaved,
+    });
+  });
+
+  app.get('/stats', (c) => {
+    return c.json({
+      storeSize: store.size,
+      toolCalls,
+      uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000),
+      requests: mcpStats.requests,
+      retrievalCalls: mcpStats.retrievalCalls,
+      indexCalls: mcpStats.indexCalls,
+      indexedTokens: mcpStats.indexedTokens,
+      returnedTokens: mcpStats.returnedTokens,
+      tokensSaved: mcpStats.tokensSaved,
+    });
+  });
 
   // MCP initialize
   app.post('/mcp', async (c) => {
@@ -25,7 +88,7 @@ export function createMCPServer(llm: LocalLLMAdapter) {
           id: body.id,
           result: {
             protocolVersion: '2024-11-05',
-            serverInfo: { name: 'context-guardian', version: '0.2.0' },
+            serverInfo: { name: 'context-guardian', version: '0.3.0' },
             capabilities: { tools: {} },
           },
         });
@@ -57,15 +120,19 @@ export function createMCPServer(llm: LocalLLMAdapter) {
 
       case 'tools/call': {
         const params = body.params as { name: string; arguments?: Record<string, unknown> };
+        mcpStats.requests++;
 
         // Handle index_content specially
         if (params.name === 'index_content') {
+          mcpStats.indexCalls++;
+          toolCalls++;
           try {
             const content = String(params.arguments?.content || '');
             const source = String(params.arguments?.source || 'mcp-input');
             if (!content.trim()) {
               return c.json({ jsonrpc: '2.0', id: body.id, result: { content: [{ type: 'text', text: 'Error: content is empty' }] } });
             }
+            mcpStats.indexedTokens += countTokens(content);
             const chunks = chunkText(content, { source });
             const classified = await llm.classifyChunks(chunks.map((c) => c.text));
             for (let i = 0; i < chunks.length; i++) {
@@ -94,6 +161,7 @@ export function createMCPServer(llm: LocalLLMAdapter) {
           }
         }
 
+        mcpStats.retrievalCalls++;
         const tool = getTool(params.name);
         if (!tool) {
           return c.json({
@@ -104,7 +172,12 @@ export function createMCPServer(llm: LocalLLMAdapter) {
         }
 
         try {
+          toolCalls++;
           const result = await tool.handler(params.arguments || {}, { store, llm });
+          const resultTokens = countTokens(result);
+          mcpStats.returnedTokens += resultTokens;
+          // MCP savings model: each retrieval call avoids stuffing the full indexed corpus.
+          mcpStats.tokensSaved += Math.max(0, mcpStats.indexedTokens - resultTokens);
           return c.json({
             jsonrpc: '2.0',
             id: body.id,

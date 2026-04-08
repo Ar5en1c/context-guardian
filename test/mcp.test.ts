@@ -39,6 +39,11 @@ describe('MCP server', () => {
     expect(names).toContain('grep');
     expect(names).toContain('file_read');
     expect(names).toContain('summary');
+    expect(names).toContain('repo_map');
+    expect(names).toContain('symbol_find');
+    expect(names).toContain('git_diff');
+    expect(names).toContain('test_failures');
+    expect(names).toContain('run_checks');
   });
 
   it('executes summary tool', async () => {
@@ -94,5 +99,53 @@ describe('MCP server', () => {
 
     const data = await res.json();
     expect(data.error.code).toBe(-32601);
+  });
+
+  it('tracks MCP usage and savings metrics', async () => {
+    const { app } = createMCPServer(mockLLM);
+    const largeContent = `${'noise line for indexing context\n'.repeat(220)}ERROR: websocket memory leak in cleanup path\n${'tail noise\n'.repeat(120)}`;
+
+    const indexRes = await app.request('/mcp', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 6,
+        method: 'tools/call',
+        params: { name: 'index_content', arguments: { source: 'metrics-test.log', content: largeContent } },
+      }),
+    });
+    const indexData = await indexRes.json();
+    expect(indexData.result.content[0].text).toContain('Indexed');
+
+    const grepRes = await app.request('/mcp', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 7,
+        method: 'tools/call',
+        params: { name: 'grep', arguments: { pattern: 'memory leak', context_lines: 0, limit: 1 } },
+      }),
+    });
+    const grepData = await grepRes.json();
+    expect(grepData.result.content[0].type).toBe('text');
+
+    const statsRes = await app.request('/stats');
+    const stats = await statsRes.json() as {
+      requests: number;
+      retrievalCalls: number;
+      indexCalls: number;
+      indexedTokens: number;
+      returnedTokens: number;
+      tokensSaved: number;
+    };
+
+    expect(stats.requests).toBe(2);
+    expect(stats.indexCalls).toBe(1);
+    expect(stats.retrievalCalls).toBe(1);
+    expect(stats.indexedTokens).toBeGreaterThan(0);
+    expect(stats.returnedTokens).toBeGreaterThan(0);
+    expect(stats.tokensSaved).toBeGreaterThan(0);
   });
 });

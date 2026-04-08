@@ -13,9 +13,14 @@ const mockLLM: LocalLLMAdapter = {
   embed: async (texts) => texts.map(() => new Array(384).fill(0.1)),
 };
 
+const FAIL_FAST_CLOUD = {
+  openai_base: 'http://127.0.0.1:9/v1',
+  anthropic_base: 'http://127.0.0.1:9',
+};
+
 describe('proxy server', () => {
   it('responds to health check', async () => {
-    const config = loadConfig({ port: 0 });
+    const config = loadConfig({ port: 0, cloud: FAIL_FAST_CLOUD });
     const stats = createStats();
     const app = createProxyServer(config, mockLLM, stats);
 
@@ -24,11 +29,11 @@ describe('proxy server', () => {
 
     const body = await res.json();
     expect(body.status).toBe('ok');
-    expect(body.version).toBe('0.1.0');
+    expect(body.version).toBe('0.3.0');
   });
 
   it('returns 400 for invalid request body', async () => {
-    const config = loadConfig({ port: 0 });
+    const config = loadConfig({ port: 0, cloud: FAIL_FAST_CLOUD });
     const stats = createStats();
     const app = createProxyServer(config, mockLLM, stats);
 
@@ -41,7 +46,7 @@ describe('proxy server', () => {
   });
 
   it('passes through small requests (increments passedThrough)', async () => {
-    const config = loadConfig({ port: 0, threshold_tokens: 50000 });
+    const config = loadConfig({ port: 0, threshold_tokens: 50000, cloud: FAIL_FAST_CLOUD });
     const stats = createStats();
     const app = createProxyServer(config, mockLLM, stats);
 
@@ -63,7 +68,7 @@ describe('proxy server', () => {
   });
 
   it('intercepts large requests (increments intercepted)', async () => {
-    const config = loadConfig({ port: 0, threshold_tokens: 100 });
+    const config = loadConfig({ port: 0, threshold_tokens: 100, cloud: FAIL_FAST_CLOUD });
     const stats = createStats();
     const app = createProxyServer(config, mockLLM, stats);
 
@@ -90,7 +95,7 @@ describe('proxy server', () => {
   });
 
   it('returns stats endpoint', async () => {
-    const config = loadConfig({ port: 0 });
+    const config = loadConfig({ port: 0, cloud: FAIL_FAST_CLOUD });
     const stats = createStats();
     stats.intercepted = 5;
     stats.passedThrough = 10;
@@ -106,7 +111,7 @@ describe('proxy server', () => {
   });
 
   it('returns 404 for unknown routes', async () => {
-    const config = loadConfig({ port: 0 });
+    const config = loadConfig({ port: 0, cloud: FAIL_FAST_CLOUD });
     const stats = createStats();
     const app = createProxyServer(config, mockLLM, stats);
 

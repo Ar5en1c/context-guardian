@@ -1,5 +1,6 @@
 import { registerTool } from './registry.js';
 import type { ToolContext } from './registry.js';
+import { searchSessionHybrid } from './utils.js';
 
 registerTool({
   definition: {
@@ -21,19 +22,43 @@ registerTool({
     const keyword = String(args.keyword || '');
     const limit = Number(args.limit) || 5;
 
-    const filter = (chunk: { label: string; metadata: Record<string, string> }) => {
+    // First try: match by source name (file path search)
+    const sourceFilter = (chunk: { label: string; metadata: Record<string, string> }) => {
       const source = chunk.metadata.source || '';
-      return source.toLowerCase().includes(query.toLowerCase()) || chunk.label === 'code';
+      return source.toLowerCase().includes(query.toLowerCase());
     };
+    const bySource = ctx.store.searchByKeyword(keyword || '', limit, sourceFilter);
+    if (bySource.length > 0) {
+      const lines = bySource.map((r, i) => {
+        const preview = r.chunk.text.slice(0, 800);
+        return `[${i + 1}] (source: ${r.chunk.metadata.source}, lines: ${r.chunk.startOffset}-${r.chunk.endOffset})\n${preview}`;
+      });
+      return lines.join('\n\n');
+    }
 
-    const searchTerm = keyword || query;
-    const results = ctx.store.searchByKeyword(searchTerm, limit, filter);
-
-    if (results.length === 0) {
-      const fallback = ctx.store.searchByKeyword(query, limit);
-      if (fallback.length === 0) {
-        return `No file content found matching "${query}"`;
+    // Second try: source match without keyword filter
+    const sourceOnly = ctx.store.getAllChunks().filter(
+      (c) => (c.metadata.source || '').toLowerCase().includes(query.toLowerCase())
+    );
+    if (sourceOnly.length > 0) {
+      let limited = keyword
+        ? sourceOnly.filter((c) => c.text.toLowerCase().includes(keyword.toLowerCase())).slice(0, limit)
+        : sourceOnly.slice(0, limit);
+      if (limited.length === 0 && keyword) {
+        limited = sourceOnly.slice(0, limit);
       }
+      if (limited.length > 0) {
+        const lines = limited.map((r, i) => {
+          const preview = r.text.slice(0, 800);
+          return `[${i + 1}] (source: ${r.metadata.source})\n${preview}`;
+        });
+        return lines.join('\n\n');
+      }
+    }
+
+    // Third try: keyword search across all chunks
+    const fallback = ctx.store.searchByKeyword(keyword || query, limit);
+    if (fallback.length > 0) {
       const lines = fallback.map((r, i) => {
         const preview = r.chunk.text.slice(0, 800);
         return `[${i + 1}] (source: ${r.chunk.metadata.source})\n${preview}`;
@@ -41,11 +66,20 @@ registerTool({
       return lines.join('\n\n');
     }
 
-    const lines = results.map((r, i) => {
-      const preview = r.chunk.text.slice(0, 800);
-      return `[${i + 1}] (source: ${r.chunk.metadata.source}, lines: ${r.chunk.startOffset}-${r.chunk.endOffset})\n${preview}`;
-    });
+    // Fallback to persisted session chunks for cross-request memory
+    if (ctx.sessionStore) {
+      const persisted = await searchSessionHybrid(ctx, keyword || query, limit, {
+        labelAllowlist: ['code', 'config', 'documentation', 'other', 'output', 'log', 'error'],
+      });
+      if (persisted.length > 0) {
+        const lines = persisted.map((r, i) => {
+          const preview = r.text.slice(0, 800);
+          return `[${i + 1}] (source: ${r.source})\n${preview}`;
+        });
+        return lines.join('\n\n');
+      }
+    }
 
-    return lines.join('\n\n');
+    return `No file content found matching "${query}"`;
   },
 });

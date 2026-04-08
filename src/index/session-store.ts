@@ -1,6 +1,7 @@
 import initSqlJs, { type Database as SqlJsDatabase } from 'sql.js';
 import { resolve } from 'node:path';
-import { mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, existsSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import type { Chunk } from './chunker.js';
 import { log } from '../display/logger.js';
 
@@ -40,7 +41,7 @@ export class SessionStore {
   private ready: Promise<void>;
 
   constructor(sessionId?: string, dbPath?: string) {
-    this.sessionId = sessionId || generateSessionId();
+    this.sessionId = normalizeSessionId(sessionId || generateSessionId());
     const dir = resolve(process.cwd(), DB_DIR);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
     this.dbPath = dbPath || resolve(dir, DB_FILE);
@@ -64,12 +65,21 @@ export class SessionStore {
         text TEXT NOT NULL,
         label TEXT NOT NULL DEFAULT 'other',
         source TEXT NOT NULL DEFAULT 'request',
+        chunk_hash TEXT,
         embedding TEXT NOT NULL DEFAULT '[]',
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
       )
     `);
+    try {
+      this.db.run('ALTER TABLE chunks ADD COLUMN chunk_hash TEXT');
+    } catch {
+      // already exists
+    }
     this.db.run('CREATE INDEX IF NOT EXISTS idx_chunks_session ON chunks(session_id)');
     this.db.run('CREATE INDEX IF NOT EXISTS idx_chunks_label ON chunks(label)');
+    this.db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_chunks_session_hash
+      ON chunks(session_id, chunk_hash)
+      WHERE chunk_hash IS NOT NULL AND chunk_hash != ''`);
     this.db.run(`
       CREATE TABLE IF NOT EXISTS sessions (
         id TEXT PRIMARY KEY,
@@ -128,10 +138,30 @@ export class SessionStore {
     this.persist();
   }
 
+  private persistTimer: ReturnType<typeof setTimeout> | null = null;
+
   private persist() {
+    if (this.persistTimer) return;
+    this.persistTimer = setTimeout(() => {
+      this.persistTimer = null;
+      try {
+        const data = this.db.export();
+        const tmpPath = this.dbPath + '.tmp';
+        writeFileSync(tmpPath, Buffer.from(data));
+        renameSync(tmpPath, this.dbPath);
+      } catch {
+        // never crash over persistence
+      }
+    }, 100);
+  }
+
+  private persistSync() {
+    if (this.persistTimer) { clearTimeout(this.persistTimer); this.persistTimer = null; }
     try {
       const data = this.db.export();
-      writeFileSync(this.dbPath, Buffer.from(data));
+      const tmpPath = this.dbPath + '.tmp';
+      writeFileSync(tmpPath, Buffer.from(data));
+      renameSync(tmpPath, this.dbPath);
     } catch {
       // never crash over persistence
     }
@@ -145,30 +175,36 @@ export class SessionStore {
     return this.sessionId;
   }
 
-  startSession(goal?: string) {
+  startSession(goal?: string, sessionId?: string) {
+    const sid = this.resolveSessionId(sessionId);
     this.db.run(
       `INSERT OR REPLACE INTO sessions (id, goal, last_active, request_count)
        VALUES (?, ?, datetime('now'),
          COALESCE((SELECT request_count FROM sessions WHERE id = ?), 0) + 1
        )`,
-      [this.sessionId, goal || null, this.sessionId],
+      [sid, goal || null, sid],
     );
     this.persist();
   }
 
-  addChunks(chunks: Chunk[], embeddings: number[][]) {
+  addChunks(chunks: Chunk[], embeddings: number[][], sessionId?: string) {
+    const sid = this.resolveSessionId(sessionId);
     this.db.run('BEGIN TRANSACTION');
     try {
       const stmt = this.db.prepare(
-        'INSERT INTO chunks (session_id, text, label, source, embedding) VALUES (?, ?, ?, ?, ?)',
+        'INSERT OR IGNORE INTO chunks (session_id, text, label, source, chunk_hash, embedding) VALUES (?, ?, ?, ?, ?, ?)',
       );
       for (let i = 0; i < chunks.length; i++) {
         const c = chunks[i];
+        const source = c.metadata.source || 'request';
+        const redactedText = redactSensitiveText(c.text);
+        const hash = hashChunk(redactedText, source);
         stmt.run([
-          this.sessionId,
-          c.text,
+          sid,
+          redactedText,
           c.label || 'other',
-          c.metadata.source || 'request',
+          source,
+          hash,
           JSON.stringify(embeddings[i] || []),
         ]);
       }
@@ -179,7 +215,7 @@ export class SessionStore {
       throw err;
     }
     this.persist();
-    log('debug', `Persisted ${chunks.length} chunks to session ${this.sessionId}`);
+    log('debug', `Persisted ${chunks.length} chunks to session ${sid}`);
   }
 
   searchFTS(query: string, limit = 10, sessionId?: string): Array<{ text: string; label: string; score: number }> {
@@ -216,6 +252,43 @@ export class SessionStore {
     return results.slice(0, limit);
   }
 
+  searchByEmbedding(
+    queryEmbedding: number[],
+    limit = 10,
+    sessionId?: string,
+  ): Array<{ text: string; label: string; source: string; score: number }> {
+    const sid = sessionId || this.sessionId;
+    if (!queryEmbedding.length) return [];
+
+    const stmt = this.db.prepare(
+      'SELECT text, label, source, embedding FROM chunks WHERE session_id = ? ORDER BY id DESC LIMIT 1500',
+    );
+    stmt.bind([sid]);
+
+    const results: Array<{ text: string; label: string; source: string; score: number }> = [];
+    while (stmt.step()) {
+      const row = stmt.getAsObject() as {
+        text: string;
+        label: string;
+        source: string;
+        embedding: string;
+      };
+      const emb = safeNumArrayParse(row.embedding);
+      if (emb.length !== queryEmbedding.length) continue;
+      const score = cosineSimilarity(queryEmbedding, emb);
+      if (score <= 0) continue;
+      results.push({
+        text: row.text,
+        label: row.label,
+        source: row.source || 'session',
+        score,
+      });
+    }
+    stmt.free();
+    results.sort((a, b) => b.score - a.score);
+    return results.slice(0, limit);
+  }
+
   searchByLabel(label: string, limit = 20, sessionId?: string): Array<{ text: string; label: string }> {
     const sid = sessionId || this.sessionId;
     const stmt = this.db.prepare(
@@ -226,6 +299,26 @@ export class SessionStore {
     const results: Array<{ text: string; label: string }> = [];
     while (stmt.step()) {
       results.push(stmt.getAsObject() as { text: string; label: string });
+    }
+    stmt.free();
+    return results;
+  }
+
+  getRecentChunks(limit = 200, sessionId?: string): Array<{ text: string; label: string; source: string }> {
+    const sid = sessionId || this.sessionId;
+    const stmt = this.db.prepare(
+      'SELECT text, label, source FROM chunks WHERE session_id = ? ORDER BY id DESC LIMIT ?',
+    );
+    stmt.bind([sid, limit]);
+
+    const results: Array<{ text: string; label: string; source: string }> = [];
+    while (stmt.step()) {
+      const row = stmt.getAsObject() as { text: string; label: string; source: string };
+      results.push({
+        text: row.text,
+        label: row.label,
+        source: row.source || 'session',
+      });
     }
     stmt.free();
     return results;
@@ -359,9 +452,11 @@ export class SessionStore {
 
   addToolResult(toolName: string, query: string, result: string, tokens: number, sessionId?: string) {
     const sid = sessionId || this.sessionId;
+    const safeQuery = redactSensitiveText(query);
+    const safeResult = redactSensitiveText(result);
     this.db.run(
       'INSERT INTO tool_results (session_id, tool_name, query, result, tokens, is_hot) VALUES (?, ?, ?, ?, ?, 1)',
-      [sid, toolName, query, result, tokens],
+      [sid, toolName, safeQuery, safeResult, tokens],
     );
     this.persist();
   }
@@ -415,7 +510,7 @@ export class SessionStore {
         'INSERT INTO entities (session_id, entity_type, value, source_chunk_id) VALUES (?, ?, ?, ?)',
       );
       for (const e of entities) {
-        stmt.run([sid, e.type, e.value, e.chunkId || null]);
+        stmt.run([sid, e.type, redactSensitiveText(e.value), e.chunkId || null]);
       }
       stmt.free();
       this.db.run('COMMIT');
@@ -459,7 +554,12 @@ export class SessionStore {
   }
 
   close() {
+    this.persistSync();
     this.db.close();
+  }
+
+  private resolveSessionId(sessionId?: string): string {
+    return normalizeSessionId(sessionId || this.sessionId);
   }
 }
 
@@ -468,8 +568,54 @@ function safeJsonParse(val: unknown): string[] {
   try { return JSON.parse(String(val)); } catch { return []; }
 }
 
+function safeNumArrayParse(val: unknown): number[] {
+  if (!val) return [];
+  try {
+    const parsed = JSON.parse(String(val));
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((n) => typeof n === 'number') as number[];
+  } catch {
+    return [];
+  }
+}
+
 function dedup(arr: string[]): string[] {
   return [...new Set(arr)];
+}
+
+function hashChunk(text: string, source: string): string {
+  return createHash('sha1').update(source).update('\n').update(text).digest('hex');
+}
+
+function normalizeSessionId(sessionId: string): string {
+  const trimmed = sessionId.trim();
+  if (!trimmed) return generateSessionId();
+  const sanitized = trimmed.replace(/[^a-zA-Z0-9._:-]/g, '-').slice(0, 120);
+  return sanitized || generateSessionId();
+}
+
+function cosineSimilarity(a: number[], b: number[]): number {
+  if (!a.length || !b.length || a.length !== b.length) return 0;
+  let dot = 0;
+  let normA = 0;
+  let normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  const denom = Math.sqrt(normA) * Math.sqrt(normB);
+  return denom === 0 ? 0 : dot / denom;
+}
+
+function redactSensitiveText(text: string): string {
+  if (!text) return text;
+  return text
+    .replace(/\bsk-[A-Za-z0-9]{16,}\b/g, '[REDACTED_API_KEY]')
+    .replace(/\b(Bearer\s+)[A-Za-z0-9._-]{10,}\b/gi, '$1[REDACTED_TOKEN]')
+    .replace(/\b(api[_-]?key\s*[:=]\s*)(['"]?)[^\s,'"`]+/gi, '$1$2[REDACTED]')
+    .replace(/\b(password\s*[:=]\s*)(['"]?)[^\s,'"`]+/gi, '$1$2[REDACTED]')
+    .replace(/\b(token\s*[:=]\s*)(['"]?)[^\s,'"`]+/gi, '$1$2[REDACTED]');
 }
 
 function generateSessionId(): string {

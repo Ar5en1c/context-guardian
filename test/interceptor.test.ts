@@ -26,6 +26,7 @@ describe('analyzeRequest', () => {
     ];
     const result = analyzeRequest(messages, 8000);
     expect(result.shouldIntercept).toBe(false);
+    expect(result.mode).toBe('passthrough');
     expect(result.totalTokens).toBeLessThan(100);
   });
 
@@ -37,8 +38,46 @@ describe('analyzeRequest', () => {
     ];
     const result = analyzeRequest(messages, 8000);
     expect(result.shouldIntercept).toBe(true);
+    expect(result.mode).toBe('full_rewrite');
     expect(result.totalTokens).toBeGreaterThan(8000);
     expect(result.largestMessageIndex).toBe(1);
+  });
+
+  it('intercepts noisy log dumps even when below token threshold', () => {
+    const logDump = Array.from(
+      { length: 120 },
+      (_, i) => `2026-04-07T12:00:${String(i % 60).padStart(2, '0')}Z ERROR request=${i} module=auth timeout while refreshing jwks`,
+    ).join('\n');
+    const messages = [
+      { role: 'user', content: `Please debug this auth issue.\n\n${logDump}` },
+    ];
+
+    const result = analyzeRequest(messages, 8000);
+    expect(result.totalTokens).toBeLessThan(8000);
+    expect(result.shouldIntercept).toBe(true);
+    expect(result.mode).toBe('context_shape');
+    expect(result.signals.logLikeLines).toBeGreaterThanOrEqual(100);
+    expect(result.reasons).toContain('log-heavy context');
+  });
+
+  it('normalizes rich message blocks before scoring', () => {
+    const stack = Array.from(
+      { length: 12 },
+      (_, i) => `  File "/app/service_${i}.py", line ${40 + i}, in handler_${i}\nTypeError: bad thing`,
+    ).join('\n');
+    const messages = [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'Investigate this traceback:' },
+          { type: 'text', text: `Traceback (most recent call last):\n${stack}` },
+        ],
+      },
+    ];
+
+    const result = analyzeRequest(messages, 8000);
+    expect(result.signals.stacktraceLines).toBeGreaterThan(0);
+    expect(result.mode).toBe('passthrough');
   });
 
   it('identifies the largest message correctly', () => {

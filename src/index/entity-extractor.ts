@@ -81,6 +81,15 @@ export function extractEntities(text: string): ExtractedEntity[] {
     for (const u of urls.slice(0, 5)) add('url', u);
   }
 
+  // Config-ish keys from logs/config dumps (e.g. retry_backoff_ms: 200,400,800)
+  const configKeys = [...input.matchAll(/^\s*([a-zA-Z_][\w.-]{2,50})\s*[:=]\s*[^\n]{1,120}$/gm)];
+  if (configKeys) {
+    for (const match of configKeys.slice(0, 12)) {
+      const key = (match[1] || '').trim();
+      if (/_|-/.test(key) || /^[a-z]+(?:[A-Z][a-z]+)+$/.test(key)) add('config_key', key);
+    }
+  }
+
   // Port numbers in context
   const ports = input.match(/(?:port|PORT|listen(?:ing)?)\s*[:=]?\s*(\d{2,5})/gi);
   if (ports) {

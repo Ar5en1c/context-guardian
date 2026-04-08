@@ -1,15 +1,19 @@
 import type { VectorStore } from '../index/store.js';
 import type { LocalLLMAdapter } from '../local-llm/adapter.js';
+import type { SessionStore } from '../index/session-store.js';
 
 export interface ToolDefinition {
   name: string;
   description: string;
   parameters: Record<string, unknown>;
+  mode?: 'read' | 'execute';
 }
 
 export interface ToolContext {
   store: VectorStore;
   llm: LocalLLMAdapter;
+  sessionStore?: SessionStore;
+  sessionId?: string;
 }
 
 export type ToolHandler = (args: Record<string, unknown>, ctx: ToolContext) => Promise<string>;

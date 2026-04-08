@@ -129,5 +129,6 @@ export async function forwardToCloud(
       ...extraHeaders,
     },
     body: JSON.stringify(request),
+    signal: AbortSignal.timeout(120_000),
   });
 }

@@ -46,6 +46,14 @@ describe('extractEntities', () => {
     expect(urls.length).toBeGreaterThanOrEqual(1);
   });
 
+  it('extracts config keys from dumps', () => {
+    const text = 'retry_backoff_ms: 200,400,800\nrolloutStrategy: canary-10-25-50-100\nowner: platform';
+    const entities = extractEntities(text);
+    const keys = entities.filter((e) => e.type === 'config_key');
+    expect(keys.some((e) => e.value === 'retry_backoff_ms')).toBe(true);
+    expect(keys.some((e) => e.value === 'rolloutStrategy')).toBe(true);
+  });
+
   it('handles empty and short strings', () => {
     expect(extractEntities('')).toEqual([]);
     expect(extractEntities('hi')).toEqual([]);

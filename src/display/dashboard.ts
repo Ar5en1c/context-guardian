@@ -25,7 +25,7 @@ export function createStats(): Stats {
 export function printBanner(config: Config, ollamaReady: boolean) {
   const lines = [
     '',
-    chalk.bold.cyan('  Context Guardian') + chalk.dim(` v0.1.0`),
+    chalk.bold.cyan('  Context Guardian') + chalk.dim(` v0.3.0`),
     '',
     `  ${chalk.dim('Local LLM:')}  ${ollamaReady ? chalk.green('ollama') : chalk.yellow('not detected')} / ${config.local_llm.model}`,
     `  ${chalk.dim('Proxy:')}     ${chalk.white(`http://localhost:${config.port}`)}`,

@@ -35,7 +35,7 @@ const program = new Command();
 program
   .name('context-guardian')
   .description('Edge-Cloud Hybrid Agent Harness. Prevents context blindness in cloud coding agents.')
-  .version('0.1.0');
+  .version('0.3.0');
 
 program
   .command('start')
@@ -113,6 +113,12 @@ program
     await import('./tools/file-read.js');
     await import('./tools/grep.js');
     await import('./tools/summary.js');
+    await import('./tools/repo-map.js');
+    await import('./tools/file-tree.js');
+    await import('./tools/symbol-find.js');
+    await import('./tools/git-diff.js');
+    await import('./tools/test-failures.js');
+    await import('./tools/run-checks.js');
 
     const config = loadConfig({ threshold_tokens: Number(opts.threshold) });
     const llm = new OllamaAdapter(opts.endpoint, opts.localModel, 'nomic-embed-text');
@@ -131,16 +137,24 @@ program
     process.stderr.write('--- WITH PROXY (intercepted) ---\n');
     const messages = [{ role: 'user', content: prompt }];
     const rawContent = extractRawContent(messages);
-    const decision = analyzeRequest(messages, config.threshold_tokens);
+    const decision = analyzeRequest(messages, config.threshold_tokens, config.intercept_policy);
 
     if (!decision.shouldIntercept) {
-      process.stderr.write(`Below threshold (${config.threshold_tokens}). Would passthrough unchanged.\n`);
+      process.stderr.write(`Would passthrough unchanged (semantic score ${decision.signals.semanticScore}).\n`);
       return;
     }
 
-    const rewrite = await rewriteRequest(rawContent, messages, llm, store, config.tools, config.context_budget);
+    process.stderr.write(`Route mode: ${decision.mode} (${decision.reasons.join(', ') || 'threshold'})\n`);
+
+    const rewrite = await rewriteRequest(rawContent, messages, llm, store, config.tools, config.context_budget, {
+      routeMode: decision.mode,
+      decisionReasons: decision.reasons,
+    });
 
     process.stderr.write(`\nGoal extracted: "${rewrite.goal}"\n`);
+    process.stderr.write(`Task profile: intent=${rewrite.taskProfile.intentType} scope=${rewrite.taskProfile.scopeClass} files=${rewrite.taskProfile.estimatedFiles.min}-${rewrite.taskProfile.estimatedFiles.max} tools=${rewrite.taskProfile.estimatedToolCalls.min}-${rewrite.taskProfile.estimatedToolCalls.max} corpus=${rewrite.taskProfile.corpusStatus}${rewrite.taskProfile.bootstrapNeeded ? ' bootstrap=yes' : ''}\n`);
+    process.stderr.write(`Deterministic bootstrap: ${rewrite.bootstrap.ran ? `yes (${rewrite.bootstrap.toolNames.join(', ')})` : 'no'}\n`);
+    process.stderr.write(`Rewrite ROI: ${rewrite.roi.shouldRewrite ? 'use rewrite' : 'prefer passthrough'} (${rewrite.roi.reason})\n`);
     process.stderr.write(`Chunks indexed: ${rewrite.chunksIndexed}\n`);
     process.stderr.write(`Token reduction: ${rewrite.inputTokens} -> ${rewrite.outputTokens} (${Math.round((1 - rewrite.outputTokens / rewrite.inputTokens) * 100)}%)\n`);
     process.stderr.write(`Tools injected: ${rewrite.toolNames.join(', ')}\n`);
@@ -168,6 +182,12 @@ program
     await import('./tools/file-read.js');
     await import('./tools/grep.js');
     await import('./tools/summary.js');
+    await import('./tools/repo-map.js');
+    await import('./tools/file-tree.js');
+    await import('./tools/symbol-find.js');
+    await import('./tools/git-diff.js');
+    await import('./tools/test-failures.js');
+    await import('./tools/run-checks.js');
 
     const config = loadConfig({ threshold_tokens: Number(opts.threshold) });
     const llm = new OllamaAdapter(opts.endpoint, opts.model, 'nomic-embed-text');
@@ -188,11 +208,14 @@ program
     const rewrite = await rewriteRequest(content, messages, llm, store, config.tools, config.context_budget);
 
     process.stderr.write(`Goal: "${rewrite.goal}"\n`);
+    process.stderr.write(`Task profile: intent=${rewrite.taskProfile.intentType} scope=${rewrite.taskProfile.scopeClass} files=${rewrite.taskProfile.estimatedFiles.min}-${rewrite.taskProfile.estimatedFiles.max} tools=${rewrite.taskProfile.estimatedToolCalls.min}-${rewrite.taskProfile.estimatedToolCalls.max} corpus=${rewrite.taskProfile.corpusStatus}${rewrite.taskProfile.bootstrapNeeded ? ' bootstrap=yes' : ''}\n`);
+    process.stderr.write(`Deterministic bootstrap: ${rewrite.bootstrap.ran ? `yes (${rewrite.bootstrap.toolNames.join(', ')})` : 'no'}\n`);
+    process.stderr.write(`Rewrite ROI: ${rewrite.roi.shouldRewrite ? 'use rewrite' : 'prefer passthrough'} (${rewrite.roi.reason})\n`);
     process.stderr.write(`Chunks: ${rewrite.chunksIndexed}\n`);
     process.stderr.write(`Reduction: ${rewrite.inputTokens} -> ${rewrite.outputTokens} tokens (${Math.round((1 - rewrite.outputTokens / rewrite.inputTokens) * 100)}%)\n`);
     process.stderr.write(`Timing: ${rewrite.timingMs.total.toFixed(0)}ms total\n\n`);
 
-    process.stdout.write(JSON.stringify({ goal: rewrite.goal, messages: rewrite.messages, tools: rewrite.toolNames, timing: rewrite.timingMs }, null, 2));
+    process.stdout.write(JSON.stringify({ goal: rewrite.goal, taskProfile: rewrite.taskProfile, bootstrap: rewrite.bootstrap, roi: rewrite.roi, messages: rewrite.messages, tools: rewrite.toolNames, timing: rewrite.timingMs }, null, 2));
     process.stdout.write('\n');
   });
 
@@ -210,6 +233,18 @@ program
       port: 9119,
       threshold_tokens: 8000,
       context_budget: 4000,
+      intercept_policy: {
+        signal_score_threshold: 3,
+        min_context_shape_tokens: 600,
+        min_context_shape_lines: 60,
+        large_message_tokens: 1400,
+        total_line_trigger: 80,
+        log_line_trigger: 60,
+        stacktrace_line_trigger: 10,
+        error_line_trigger: 8,
+        code_line_trigger: 140,
+        path_hint_trigger: 6,
+      },
       local_llm: {
         backend: 'ollama',
         model: 'qwen3.5:4b',
@@ -220,7 +255,11 @@ program
         openai_base: 'https://api.openai.com/v1',
         anthropic_base: 'https://api.anthropic.com',
       },
-      tools: ['log_search', 'file_read', 'grep', 'summary'],
+      tools: ['log_search', 'file_read', 'grep', 'summary', 'repo_map', 'file_tree', 'symbol_find', 'git_diff', 'test_failures', 'run_checks'],
+      tool_policy: {
+        allow_execution: true,
+        allowed_execute_tools: ['run_checks', 'test_failures'],
+      },
       verbose: false,
     };
     writeFileSync(path, JSON.stringify(defaultConfig, null, 2) + '\n');
@@ -270,6 +309,48 @@ program
       process.stderr.write(`  ${s.id}  chunks:${s.chunkCount}  reqs:${s.requestCount}  ${s.lastActive}${goal}\n`);
     }
     process.stderr.write('\n');
+  });
+
+program
+  .command('compact')
+  .description('Manually compact a session into core memory state')
+  .option('-s, --session <id>', 'Session ID to compact (defaults to most recent)')
+  .option('-m, --model <string>', 'Local LLM model name', 'qwen3.5:4b')
+  .option('-e, --endpoint <string>', 'Ollama endpoint', 'http://localhost:11434')
+  .action(async (opts) => {
+    const { SessionStore } = await import('./index/session-store.js');
+    const { manualCompact } = await import('./proxy/compaction.js');
+    const { OllamaAdapter } = await import('./local-llm/ollama.js');
+
+    const bootstrap = new SessionStore();
+    await bootstrap.ensureReady();
+    const recent = bootstrap.listSessions(1);
+    const targetSessionId = opts.session || recent[0]?.id;
+    bootstrap.close();
+
+    if (!targetSessionId) {
+      process.stderr.write('No sessions found. Start the proxy first to collect session data.\n');
+      process.exit(1);
+    }
+
+    const store = new SessionStore(targetSessionId);
+    await store.ensureReady();
+
+    const llm = new OllamaAdapter(opts.endpoint, opts.model, 'nomic-embed-text');
+    const recentChunks = store.getRecentChunks(200).map((c) => `[chunk:${c.label}] ${c.text.slice(0, 600)}`);
+    const hotToolResults = store.getHotToolResults(20).map((r) => `[tool:${r.toolName}] query="${r.query}" ${r.result.slice(0, 600)}`);
+    const sourceText = [...recentChunks, ...hotToolResults].join('\n---\n');
+
+    const result = await manualCompact(store, llm, sourceText, targetSessionId);
+    if (!result.compacted) {
+      process.stderr.write(`Compaction skipped: ${result.summaryMessage || 'insufficient session data'}\n`);
+      store.close();
+      return;
+    }
+
+    process.stderr.write(`Compacted session: ${targetSessionId}\n\n`);
+    process.stderr.write(`${store.formatCoreMemoryBlock(targetSessionId)}\n\n`);
+    store.close();
   });
 
 program

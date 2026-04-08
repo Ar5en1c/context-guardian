@@ -1,5 +1,6 @@
 import { registerTool } from './registry.js';
 import type { ToolContext } from './registry.js';
+import { searchSessionHybrid } from './utils.js';
 
 registerTool({
   definition: {
@@ -42,15 +43,31 @@ registerTool({
       results = ctx.store.searchByKeyword(query, limit);
     }
 
-    if (results.length === 0) {
-      return `No log entries found matching "${query}"`;
+    if (results.length > 0) {
+      const lines = results.map((r, i) => {
+        const preview = r.chunk.text.slice(0, 500);
+        return `[${i + 1}] (score: ${r.score.toFixed(2)}, source: ${r.chunk.metadata.source})\n${preview}`;
+      });
+      return lines.join('\n\n');
     }
 
-    const lines = results.map((r, i) => {
-      const preview = r.chunk.text.slice(0, 500);
-      return `[${i + 1}] (score: ${r.score.toFixed(2)}, source: ${r.chunk.metadata.source})\n${preview}`;
-    });
+    // Fallback to persisted session chunks for cross-request memory
+    if (ctx.sessionStore) {
+      const persisted = (await searchSessionHybrid(ctx, query, limit, {
+        labelAllowlist: ['log', 'error', 'output', 'stacktrace'],
+      })).filter((r) => {
+        if (severity === 'all') return true;
+        return r.text.toLowerCase().includes(severity);
+      });
+      if (persisted.length > 0) {
+        const lines = persisted.map((r, i) => {
+          const preview = r.text.slice(0, 500);
+          return `[${i + 1}] (score: ${r.score.toFixed(2)}, source: ${r.source})\n${preview}`;
+        });
+        return lines.join('\n\n');
+      }
+    }
 
-    return lines.join('\n\n');
+    return `No log entries found matching "${query}"`;
   },
 });

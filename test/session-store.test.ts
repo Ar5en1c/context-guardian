@@ -107,4 +107,78 @@ describe('SessionStore', () => {
     expect(results.length).toBe(1);
     store.close();
   });
+
+  it('supports semantic search over persisted embeddings', async () => {
+    const store = await createStore('semantic-search');
+    store.startSession();
+    store.addChunks(
+      [
+        {
+          id: '1',
+          text: 'JWT validation timeout while refreshing JWKS',
+          label: 'error',
+          startOffset: 0,
+          endOffset: 42,
+          metadata: { source: 'auth.log' },
+        },
+        {
+          id: '2',
+          text: 'Database connection pool healthy',
+          label: 'log',
+          startOffset: 43,
+          endOffset: 74,
+          metadata: { source: 'db.log' },
+        },
+      ],
+      [
+        [0.9, 0.1, 0.0],
+        [0.1, 0.9, 0.0],
+      ],
+    );
+
+    const results = store.searchByEmbedding([1, 0, 0], 2);
+    expect(results.length).toBeGreaterThan(0);
+    expect(results[0].text.toLowerCase()).toContain('jwt');
+    store.close();
+  });
+
+  it('redacts sensitive tokens before persistence', async () => {
+    const store = await createStore('redaction-test');
+    store.startSession();
+    store.addChunks(
+      [{
+        id: '1',
+        text: 'Authorization: Bearer sk-1234567890abcdefghijklmnop',
+        label: 'log',
+        startOffset: 0,
+        endOffset: 54,
+        metadata: { source: 'log' },
+      }],
+      [[0.1]],
+    );
+
+    const results = store.searchFTS('Authorization');
+    expect(results[0].text).toContain('[REDACTED_');
+    expect(results[0].text).not.toContain('sk-1234567890abcdefghijklmnop');
+    store.close();
+  });
+
+  it('deduplicates identical chunks per session', async () => {
+    const store = await createStore('dedup-test');
+    store.startSession();
+    const chunk = {
+      id: '1',
+      text: 'ERROR: duplicate timeout',
+      label: 'error',
+      startOffset: 0,
+      endOffset: 24,
+      metadata: { source: 'log' },
+    } as const;
+
+    store.addChunks([chunk], [[]]);
+    store.addChunks([{ ...chunk, id: '2' }], [[]]);
+
+    expect(store.getSessionChunkCount()).toBe(1);
+    store.close();
+  });
 });

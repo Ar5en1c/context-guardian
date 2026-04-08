@@ -1,0 +1,321 @@
+{
+  "generatedAt": "2026-04-08T07:07:18.725Z",
+  "model": "claude-opus-4-6",
+  "repeats": 3,
+  "scenarios": [
+    "gpu-kernel-arch",
+    "websocket-memleak",
+    "project-architecture"
+  ],
+  "contextSource": "WebLLM/Bonsai-WebGPU R&D repo (real files)",
+  "results": [
+    {
+      "scenario": "gpu-kernel-arch",
+      "mode": "baseline",
+      "repeat": 1,
+      "durationMs": 5404,
+      "usage": {
+        "input_tokens": 3,
+        "output_tokens": 91,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 104366
+      },
+      "score": 6,
+      "total": 6,
+      "answered": 6,
+      "promptTokens": 82291
+    },
+    {
+      "scenario": "gpu-kernel-arch",
+      "mode": "mcp",
+      "repeat": 1,
+      "durationMs": 25893,
+      "usage": {
+        "input_tokens": 6,
+        "output_tokens": 1018,
+        "cache_read_input_tokens": 63479,
+        "cache_creation_input_tokens": 26733
+      },
+      "score": 6,
+      "total": 6,
+      "answered": 6,
+      "promptTokens": 322
+    },
+    {
+      "scenario": "gpu-kernel-arch",
+      "mode": "baseline",
+      "repeat": 2,
+      "durationMs": 3929,
+      "usage": {
+        "input_tokens": 3,
+        "output_tokens": 92,
+        "cache_read_input_tokens": 104366,
+        "cache_creation_input_tokens": 0
+      },
+      "score": 6,
+      "total": 6,
+      "answered": 6,
+      "promptTokens": 82291
+    },
+    {
+      "scenario": "gpu-kernel-arch",
+      "mode": "mcp",
+      "repeat": 2,
+      "durationMs": 23987,
+      "usage": {
+        "input_tokens": 6,
+        "output_tokens": 899,
+        "cache_read_input_tokens": 82359,
+        "cache_creation_input_tokens": 10761
+      },
+      "score": 6,
+      "total": 6,
+      "answered": 6,
+      "promptTokens": 322
+    },
+    {
+      "scenario": "gpu-kernel-arch",
+      "mode": "baseline",
+      "repeat": 3,
+      "durationMs": 4104,
+      "usage": {
+        "input_tokens": 3,
+        "output_tokens": 91,
+        "cache_read_input_tokens": 104366,
+        "cache_creation_input_tokens": 0
+      },
+      "score": 6,
+      "total": 6,
+      "answered": 6,
+      "promptTokens": 82291
+    },
+    {
+      "scenario": "gpu-kernel-arch",
+      "mode": "mcp",
+      "repeat": 3,
+      "durationMs": 22672,
+      "usage": {
+        "input_tokens": 6,
+        "output_tokens": 828,
+        "cache_read_input_tokens": 81821,
+        "cache_creation_input_tokens": 10807
+      },
+      "score": 6,
+      "total": 6,
+      "answered": 6,
+      "promptTokens": 322
+    },
+    {
+      "scenario": "websocket-memleak",
+      "mode": "baseline",
+      "repeat": 1,
+      "durationMs": 5396,
+      "usage": {
+        "input_tokens": 3,
+        "output_tokens": 72,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 96444
+      },
+      "score": 6,
+      "total": 6,
+      "answered": 6,
+      "promptTokens": 74995
+    },
+    {
+      "scenario": "websocket-memleak",
+      "mode": "mcp",
+      "repeat": 1,
+      "durationMs": 9055,
+      "usage": {
+        "input_tokens": 4,
+        "output_tokens": 244,
+        "cache_read_input_tokens": 32575,
+        "cache_creation_input_tokens": 3405
+      },
+      "score": 6,
+      "total": 6,
+      "answered": 6,
+      "promptTokens": 294
+    },
+    {
+      "scenario": "websocket-memleak",
+      "mode": "baseline",
+      "repeat": 2,
+      "durationMs": 4443,
+      "usage": {
+        "input_tokens": 3,
+        "output_tokens": 72,
+        "cache_read_input_tokens": 96444,
+        "cache_creation_input_tokens": 0
+      },
+      "score": 6,
+      "total": 6,
+      "answered": 6,
+      "promptTokens": 74995
+    },
+    {
+      "scenario": "websocket-memleak",
+      "mode": "mcp",
+      "repeat": 2,
+      "durationMs": 71914,
+      "usage": {
+        "input_tokens": 5,
+        "output_tokens": 286,
+        "cache_read_input_tokens": 50993,
+        "cache_creation_input_tokens": 1805
+      },
+      "score": 6,
+      "total": 6,
+      "answered": 6,
+      "promptTokens": 294
+    },
+    {
+      "scenario": "websocket-memleak",
+      "mode": "baseline",
+      "repeat": 3,
+      "durationMs": 5557,
+      "usage": {
+        "input_tokens": 3,
+        "output_tokens": 72,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 96444
+      },
+      "score": 6,
+      "total": 6,
+      "answered": 6,
+      "promptTokens": 74995
+    },
+    {
+      "scenario": "websocket-memleak",
+      "mode": "mcp",
+      "repeat": 3,
+      "durationMs": 11126,
+      "usage": {
+        "input_tokens": 5,
+        "output_tokens": 255,
+        "cache_read_input_tokens": 49244,
+        "cache_creation_input_tokens": 3099
+      },
+      "score": 6,
+      "total": 6,
+      "answered": 6,
+      "promptTokens": 294
+    },
+    {
+      "scenario": "project-architecture",
+      "mode": "baseline",
+      "repeat": 1,
+      "durationMs": 9489,
+      "usage": {
+        "input_tokens": 3,
+        "output_tokens": 116,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 123622
+      },
+      "score": 6,
+      "total": 6,
+      "answered": 6,
+      "promptTokens": 98601
+    },
+    {
+      "scenario": "project-architecture",
+      "mode": "mcp",
+      "repeat": 1,
+      "durationMs": 23425,
+      "usage": {
+        "input_tokens": 5,
+        "output_tokens": 694,
+        "cache_read_input_tokens": 55532,
+        "cache_creation_input_tokens": 9111
+      },
+      "score": 6,
+      "total": 6,
+      "answered": 6,
+      "promptTokens": 292
+    },
+    {
+      "scenario": "project-architecture",
+      "mode": "baseline",
+      "repeat": 2,
+      "durationMs": 6415,
+      "usage": {
+        "input_tokens": 3,
+        "output_tokens": 134,
+        "cache_read_input_tokens": 123622,
+        "cache_creation_input_tokens": 0
+      },
+      "score": 6,
+      "total": 6,
+      "answered": 6,
+      "promptTokens": 98601
+    },
+    {
+      "scenario": "project-architecture",
+      "mode": "mcp",
+      "repeat": 2,
+      "durationMs": 17584,
+      "usage": {
+        "input_tokens": 4,
+        "output_tokens": 625,
+        "cache_read_input_tokens": 33006,
+        "cache_creation_input_tokens": 7489
+      },
+      "score": 6,
+      "total": 6,
+      "answered": 6,
+      "promptTokens": 292
+    },
+    {
+      "scenario": "project-architecture",
+      "mode": "baseline",
+      "repeat": 3,
+      "durationMs": 5587,
+      "usage": {
+        "input_tokens": 3,
+        "output_tokens": 135,
+        "cache_read_input_tokens": 123622,
+        "cache_creation_input_tokens": 0
+      },
+      "score": 6,
+      "total": 6,
+      "answered": 6,
+      "promptTokens": 98601
+    },
+    {
+      "scenario": "project-architecture",
+      "mode": "mcp",
+      "repeat": 3,
+      "durationMs": 18279,
+      "usage": {
+        "input_tokens": 4,
+        "output_tokens": 694,
+        "cache_read_input_tokens": 33006,
+        "cache_creation_input_tokens": 5636
+      },
+      "score": 6,
+      "total": 6,
+      "answered": 6,
+      "promptTokens": 292
+    }
+  ],
+  "aggregate": {
+    "baseline": {
+      "accuracy": {
+        "mean": 1,
+        "ci95Low": 1,
+        "ci95High": 1
+      },
+      "processedTokens": 973323,
+      "cost": 2.472945
+    },
+    "mcp": {
+      "accuracy": {
+        "mean": 1,
+        "ci95Low": 1,
+        "ci95High": 1
+      },
+      "processedTokens": 560906,
+      "cost": 1.435095
+    }
+  }
+}

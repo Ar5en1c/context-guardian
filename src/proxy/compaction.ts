@@ -12,6 +12,8 @@ const HOT_TAIL_SIZE = 3;
 const AUTO_COMPACT_THRESHOLD = 0.8;
 // Reserve tokens for the model output + compaction prompt itself
 const OUTPUT_RESERVE = 2000;
+const MIN_EFFECTIVE_BUDGET = 400;
+const AUTO_COMPACT_COOLDOWN_MS = 15_000;
 
 export interface CompactionConfig {
   contextBudget: number;
@@ -23,9 +25,17 @@ export function shouldAutoCompact(
   currentTokens: number,
   config: CompactionConfig,
 ): boolean {
+  if (config.contextBudget <= 0) return true;
   const threshold = config.autoThreshold ?? AUTO_COMPACT_THRESHOLD;
-  const effectiveBudget = config.contextBudget - OUTPUT_RESERVE;
+  const effectiveBudget = Math.max(MIN_EFFECTIVE_BUDGET, config.contextBudget - OUTPUT_RESERVE);
   return currentTokens > effectiveBudget * threshold;
+}
+
+export function autoCompactThresholdTokens(config: CompactionConfig): number {
+  if (config.contextBudget <= 0) return 0;
+  const threshold = config.autoThreshold ?? AUTO_COMPACT_THRESHOLD;
+  const effectiveBudget = Math.max(MIN_EFFECTIVE_BUDGET, config.contextBudget - OUTPUT_RESERVE);
+  return Math.round(effectiveBudget * threshold);
 }
 
 export function microcompactToolResults(
@@ -64,14 +74,53 @@ export async function autoCompact(
     return { compacted: false, coreMemory: null, summaryMessage: '' };
   }
 
-  log('compact', `Auto-compaction triggered: ${currentTokens} tokens > ${Math.round(config.contextBudget * (config.autoThreshold ?? AUTO_COMPACT_THRESHOLD))} threshold`);
+  const existingMemory = sessionStore.getCoreMemory(sessionId);
+  const compactedAt = existingMemory?.compactedAt ? Date.parse(existingMemory.compactedAt) : 0;
+  if (compactedAt && Number.isFinite(compactedAt) && Date.now() - compactedAt < AUTO_COMPACT_COOLDOWN_MS) {
+    return { compacted: false, coreMemory: existingMemory || null, summaryMessage: '' };
+  }
 
-  // Build compaction prompt: ask local LLM to summarize the conversation state
+  log('compact', `Auto-compaction triggered: ${currentTokens} tokens > ${autoCompactThresholdTokens(config)} threshold`);
+
   const conversationText = currentMessages
     .map((m) => `[${m.role}]: ${m.content.slice(0, 2000)}`)
     .join('\n---\n');
 
-  const existingMemory = sessionStore.getCoreMemory(sessionId);
+  return runCompaction(sessionStore, llm, conversationText, sessionId, existingMemory || undefined);
+}
+
+export async function manualCompact(
+  sessionStore: SessionStore,
+  llm: LocalLLMAdapter,
+  sourceText: string,
+  sessionId?: string,
+): Promise<{ compacted: boolean; coreMemory: CoreMemory | null; summaryMessage: string }> {
+  let conversationText = sourceText.trim();
+  if (!conversationText) {
+    const recentChunks = sessionStore.getRecentChunks(200, sessionId);
+    conversationText = recentChunks
+      .map((c) => `[chunk:${c.label}] ${c.text.slice(0, 500)}`)
+      .join('\n---\n');
+  }
+
+  if (!conversationText) {
+    return { compacted: false, coreMemory: null, summaryMessage: 'No session content available to compact.' };
+  }
+
+  log('compact', `Manual compaction started for session ${sessionId || sessionStore.currentSessionId}`);
+  return runCompaction(sessionStore, llm, conversationText, sessionId);
+}
+
+async function runCompaction(
+  sessionStore: SessionStore,
+  llm: LocalLLMAdapter,
+  conversationText: string,
+  sessionId?: string,
+  existingMemoryInput?: CoreMemory,
+): Promise<{ compacted: boolean; coreMemory: CoreMemory | null; summaryMessage: string }> {
+  // Build compaction prompt: ask local LLM to summarize the conversation state
+
+  const existingMemory = existingMemoryInput || sessionStore.getCoreMemory(sessionId);
   const memoryContext = existingMemory
     ? `\nPREVIOUS STATE:\nGoal: ${existingMemory.goal}\nFiles: ${existingMemory.filesTouched.join(', ')}\nDecisions: ${existingMemory.decisions.join('; ')}\nErrors: ${existingMemory.errorsFixed.join('; ')}\nPending: ${existingMemory.pendingTasks.join('; ')}`
     : '';
@@ -108,7 +157,7 @@ NEXT: <single most important next action>`;
 ${sessionStore.formatCoreMemoryBlock(sessionId)}
 Continue from where we left off. The session state above is authoritative.`;
 
-    log('compact', `Compacted ${currentTokens} tokens -> core memory updated`);
+    log('compact', 'Compaction completed -> core memory updated');
     return { compacted: true, coreMemory: parsed, summaryMessage };
   } catch (err) {
     log('error', `Auto-compaction failed: ${err instanceof Error ? err.message : String(err)}`);

@@ -83,6 +83,7 @@ export async function forwardToCloud(
     method: 'POST',
     headers,
     body: JSON.stringify(request),
+    signal: AbortSignal.timeout(120_000),
   });
 }
 

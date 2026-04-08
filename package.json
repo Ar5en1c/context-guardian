@@ -1,12 +1,12 @@
 {
   "name": "context-guardian",
-  "version": "0.2.0",
-  "description": "Edge-Cloud Hybrid Agent Harness. Local LLM intercepts massive prompts, forces cloud agents to use deterministic RAG tools instead of context-stuffing.",
+  "version": "0.3.0",
+  "description": "MCP server + proxy that cuts cloud LLM costs 36-42% by indexing context locally with Ollama and giving agents precision retrieval tools instead of raw dumps.",
   "type": "module",
+  "preferGlobal": true,
   "bin": {
     "context-guardian": "./bin/context-guardian.js"
   },
-  "main": "./dist/cli.js",
   "files": [
     "dist",
     "bin",
@@ -20,20 +20,33 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "tsc --noEmit",
+    "bench:semantic": "tsx benchmark/run-semantic-routing-benchmark.ts",
+    "bench:droid": "tsx benchmark/run-droid-ab.ts",
+    "bench:multi": "tsx benchmark/run-multi-task-benchmark.ts",
+    "bench:oss": "tsx benchmark/oss/run-oss-benchmark.ts",
+    "bench:oss:quick": "tsx benchmark/oss/run-oss-benchmark.ts --repeats 1 --scenarios small-clean-fix,medium-auth-incident,large-noisy-auth",
+    "bench:realworld": "tsx benchmark/run-realworld-ab.ts",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
     "ai-agent",
+    "agent-harness",
     "context-window",
+    "context-engineering",
     "local-llm",
+    "mcp",
+    "ollama",
+    "openai-compatible",
+    "anthropic",
     "proxy",
     "rag",
-    "webgpu",
-    "ollama",
-    "coding-agent"
+    "coding-agent",
+    "developer-tools",
+    "cli"
   ],
   "author": "Kuldeep Singh",
   "license": "MIT",
+  "packageManager": "npm@10.9.4",
   "dependencies": {
     "@hono/node-server": "^1.19.13",
     "chalk": "^5.4.1",

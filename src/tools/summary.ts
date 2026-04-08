@@ -1,5 +1,6 @@
 import { registerTool } from './registry.js';
 import type { ToolContext } from './registry.js';
+import { searchSessionHybrid } from './utils.js';
 
 registerTool({
   definition: {
@@ -16,6 +17,7 @@ registerTool({
 
   handler: async (args: Record<string, unknown>, ctx: ToolContext): Promise<string> => {
     const topic = String(args.topic || '').toLowerCase();
+    type SummaryChunk = { text: string; label: string };
 
     const labelMap: Record<string, string[]> = {
       errors: ['error', 'stacktrace'],
@@ -26,12 +28,35 @@ registerTool({
       all: ['log', 'code', 'error', 'config', 'documentation', 'stacktrace', 'output', 'data', 'other'],
     };
 
-    const allChunks = ctx.store.getAllChunks();
+    const allChunks: SummaryChunk[] = ctx.store.getAllChunks().map((c) => ({
+      text: c.text,
+      label: c.label,
+    }));
     const targetLabels = labelMap[topic] || [topic];
     let matchingChunks = allChunks.filter((c) => targetLabels.includes(c.label));
 
     if (matchingChunks.length === 0) {
-      matchingChunks = allChunks.filter((c) => c.text.toLowerCase().includes(topic));
+      const words = topic.split(/\s+/).filter(Boolean);
+      matchingChunks = allChunks.filter((c) => {
+        const lower = c.text.toLowerCase();
+        const hits = words.filter((w) => lower.includes(w)).length;
+        return hits >= Math.max(1, Math.ceil(words.length * 0.4));
+      });
+    }
+
+    if (matchingChunks.length === 0 && ctx.sessionStore) {
+      const byLabel = targetLabels.flatMap((l) =>
+        ctx.sessionStore!.searchByLabel(l, 20, ctx.sessionId).map((r) => ({ text: r.text, label: r.label })),
+      );
+      const byTopic = await searchSessionHybrid(ctx, topic || 'error', 20);
+      const merged = [...byLabel, ...byTopic];
+      const dedup = new Set<string>();
+      matchingChunks = merged.filter((c) => {
+        const key = `${c.label}:${c.text.slice(0, 120)}`;
+        if (dedup.has(key)) return false;
+        dedup.add(key);
+        return true;
+      });
     }
 
     if (matchingChunks.length === 0) {

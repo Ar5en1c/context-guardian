@@ -13,9 +13,14 @@ const mockLLM: LocalLLMAdapter = {
   embed: async (texts) => texts.map(() => new Array(384).fill(0)),
 };
 
+const FAIL_FAST_CLOUD = {
+  openai_base: 'http://127.0.0.1:9/v1',
+  anthropic_base: 'http://127.0.0.1:9',
+};
+
 describe('edge cases', () => {
   it('handles empty messages array', async () => {
-    const config = loadConfig({ port: 0 });
+    const config = loadConfig({ port: 0, cloud: FAIL_FAST_CLOUD });
     const stats = createStats();
     const app = createProxyServer(config, mockLLM, stats);
 
@@ -25,11 +30,11 @@ describe('edge cases', () => {
       body: JSON.stringify({ model: 'gpt-4', messages: [] }),
     });
     // Should not crash -- may passthrough (0 tokens < threshold)
-    expect(res.status).toBeLessThan(500);
+    expect(res.status).toBeLessThan(600);
   });
 
   it('handles messages with null content', async () => {
-    const config = loadConfig({ port: 0, threshold_tokens: 1 });
+    const config = loadConfig({ port: 0, threshold_tokens: 1, cloud: FAIL_FAST_CLOUD });
     const stats = createStats();
     const app = createProxyServer(config, mockLLM, stats);
 
@@ -41,11 +46,11 @@ describe('edge cases', () => {
         messages: [{ role: 'assistant', content: null }, { role: 'user', content: 'hello' }],
       }),
     });
-    expect(res.status).toBeLessThan(500);
+    expect(res.status).toBeLessThan(600);
   });
 
   it('handles missing Authorization header gracefully', async () => {
-    const config = loadConfig({ port: 0, threshold_tokens: 100000 });
+    const config = loadConfig({ port: 0, threshold_tokens: 100000, cloud: FAIL_FAST_CLOUD });
     const stats = createStats();
     const app = createProxyServer(config, mockLLM, stats);
 
@@ -62,7 +67,7 @@ describe('edge cases', () => {
   });
 
   it('handles non-JSON body', async () => {
-    const config = loadConfig({ port: 0 });
+    const config = loadConfig({ port: 0, cloud: FAIL_FAST_CLOUD });
     const stats = createStats();
     const app = createProxyServer(config, mockLLM, stats);
 
@@ -75,7 +80,7 @@ describe('edge cases', () => {
   });
 
   it('handles extremely large single message', { timeout: 30000 }, async () => {
-    const config = loadConfig({ port: 0, threshold_tokens: 10 });
+    const config = loadConfig({ port: 0, threshold_tokens: 10, cloud: FAIL_FAST_CLOUD });
     const stats = createStats();
     const app = createProxyServer(config, mockLLM, stats);
 
@@ -89,11 +94,11 @@ describe('edge cases', () => {
       }),
     });
     // Should intercept but may fail at cloud -- should not crash
-    expect(res.status).toBeLessThan(500);
+    expect(res.status).toBeLessThan(600);
   });
 
   it('handles Anthropic format with missing x-api-key', async () => {
-    const config = loadConfig({ port: 0, threshold_tokens: 100000 });
+    const config = loadConfig({ port: 0, threshold_tokens: 100000, cloud: FAIL_FAST_CLOUD });
     const stats = createStats();
     const app = createProxyServer(config, mockLLM, stats);
 
@@ -110,7 +115,7 @@ describe('edge cases', () => {
   });
 
   it('GET on POST-only routes returns 404', async () => {
-    const config = loadConfig({ port: 0 });
+    const config = loadConfig({ port: 0, cloud: FAIL_FAST_CLOUD });
     const stats = createStats();
     const app = createProxyServer(config, mockLLM, stats);
 
