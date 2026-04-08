@@ -29,8 +29,11 @@ export function createMCPServer(llm: LocalLLMAdapter) {
     indexCalls: 0,
     indexedTokens: 0,
     returnedTokens: 0,
-    tokensSaved: 0,
   };
+  // Honest savings: without CG the agent would stuff all indexedTokens as raw
+  // context. With CG it sends tool results (returnedTokens) instead.
+  // Savings = indexedTokens - returnedTokens, counted ONCE not per-call.
+  const getTokensSaved = () => Math.max(0, mcpStats.indexedTokens - mcpStats.returnedTokens);
 
   app.get('/', (c) => {
     const html = renderDashboardHTML({
@@ -39,7 +42,7 @@ export function createMCPServer(llm: LocalLLMAdapter) {
       uptime: (Date.now() - startedAt) / 1000,
       intercepted: mcpStats.retrievalCalls,
       passedThrough: mcpStats.indexCalls,
-      tokensSaved: mcpStats.tokensSaved,
+      tokensSaved: getTokensSaved(),
       storeSize: store.size,
       toolCalls,
       sessions: [],
@@ -59,7 +62,7 @@ export function createMCPServer(llm: LocalLLMAdapter) {
       indexCalls: mcpStats.indexCalls,
       indexedTokens: mcpStats.indexedTokens,
       returnedTokens: mcpStats.returnedTokens,
-      tokensSaved: mcpStats.tokensSaved,
+      tokensSaved: getTokensSaved(),
     });
   });
 
@@ -73,7 +76,7 @@ export function createMCPServer(llm: LocalLLMAdapter) {
       indexCalls: mcpStats.indexCalls,
       indexedTokens: mcpStats.indexedTokens,
       returnedTokens: mcpStats.returnedTokens,
-      tokensSaved: mcpStats.tokensSaved,
+      tokensSaved: getTokensSaved(),
     });
   });
 
@@ -176,8 +179,6 @@ export function createMCPServer(llm: LocalLLMAdapter) {
           const result = await tool.handler(params.arguments || {}, { store, llm });
           const resultTokens = countTokens(result);
           mcpStats.returnedTokens += resultTokens;
-          // MCP savings model: each retrieval call avoids stuffing the full indexed corpus.
-          mcpStats.tokensSaved += Math.max(0, mcpStats.indexedTokens - resultTokens);
           return c.json({
             jsonrpc: '2.0',
             id: body.id,
