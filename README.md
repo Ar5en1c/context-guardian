@@ -17,7 +17,7 @@ The local LLM (Qwen 3.5 4B) handles classification and embedding. The cloud mode
 
 ```bash
 # Install
-npm install -g context-guardian
+npm install -g context-guardian-mcp
 
 # Start the MCP server
 context-guardian mcp
