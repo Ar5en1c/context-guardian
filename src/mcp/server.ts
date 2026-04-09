@@ -33,10 +33,16 @@ export function createMCPServer(llm: LocalLLMAdapter) {
   };
   const returnedChunkHashes = new Set<string>();
 
-  // Honest savings: without CG the agent would stuff all indexedTokens as raw
-  // context. With CG it sends unique tool results instead.
-  // Use uniqueReturnedTokens to avoid inflating returnedTokens from overlapping queries.
-  const getTokensSaved = () => Math.max(0, mcpStats.indexedTokens - mcpStats.uniqueReturnedTokens);
+  // Savings model: without CG, the agent re-sends all indexed content every turn.
+  // Over N retrieval turns, raw mode costs indexedTokens * N (cumulative history).
+  // CG mode costs sum of individual tool results (no history accumulation of raw content).
+  // Single-turn savings can be negative (tool overhead > indexed content) but multi-turn is always positive.
+  const getTokensSaved = () => {
+    const turns = Math.max(1, mcpStats.retrievalCalls);
+    const rawCost = mcpStats.indexedTokens * turns; // re-sent every turn in raw mode
+    const cgCost = mcpStats.returnedTokens;          // only tool results sent
+    return Math.max(0, rawCost - cgCost);
+  };
 
   app.get('/', (c) => {
     const html = renderDashboardHTML({
