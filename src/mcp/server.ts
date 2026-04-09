@@ -28,12 +28,15 @@ export function createMCPServer(llm: LocalLLMAdapter) {
     retrievalCalls: 0,
     indexCalls: 0,
     indexedTokens: 0,
-    returnedTokens: 0,
+    returnedTokens: 0,        // cumulative (may double-count overlapping chunks)
+    uniqueReturnedTokens: 0,  // deduplicated by content hash
   };
+  const returnedChunkHashes = new Set<string>();
+
   // Honest savings: without CG the agent would stuff all indexedTokens as raw
-  // context. With CG it sends tool results (returnedTokens) instead.
-  // Savings = indexedTokens - returnedTokens, counted ONCE not per-call.
-  const getTokensSaved = () => Math.max(0, mcpStats.indexedTokens - mcpStats.returnedTokens);
+  // context. With CG it sends unique tool results instead.
+  // Use uniqueReturnedTokens to avoid inflating returnedTokens from overlapping queries.
+  const getTokensSaved = () => Math.max(0, mcpStats.indexedTokens - mcpStats.uniqueReturnedTokens);
 
   app.get('/', (c) => {
     const html = renderDashboardHTML({
@@ -61,7 +64,8 @@ export function createMCPServer(llm: LocalLLMAdapter) {
       retrievalCalls: mcpStats.retrievalCalls,
       indexCalls: mcpStats.indexCalls,
       indexedTokens: mcpStats.indexedTokens,
-      returnedTokens: mcpStats.returnedTokens,
+      returnedTokens: mcpStats.uniqueReturnedTokens,
+      returnedTokensRaw: mcpStats.returnedTokens,
       tokensSaved: getTokensSaved(),
     });
   });
@@ -75,7 +79,8 @@ export function createMCPServer(llm: LocalLLMAdapter) {
       retrievalCalls: mcpStats.retrievalCalls,
       indexCalls: mcpStats.indexCalls,
       indexedTokens: mcpStats.indexedTokens,
-      returnedTokens: mcpStats.returnedTokens,
+      returnedTokens: mcpStats.uniqueReturnedTokens,
+      returnedTokensRaw: mcpStats.returnedTokens,
       tokensSaved: getTokensSaved(),
     });
   });
@@ -179,6 +184,12 @@ export function createMCPServer(llm: LocalLLMAdapter) {
           const result = await tool.handler(params.arguments || {}, { store, llm });
           const resultTokens = countTokens(result);
           mcpStats.returnedTokens += resultTokens;
+          // Track unique results for honest savings calculation
+          const resultHash = result.length + ':' + result.slice(0, 100) + result.slice(-100);
+          if (!returnedChunkHashes.has(resultHash)) {
+            returnedChunkHashes.add(resultHash);
+            mcpStats.uniqueReturnedTokens += resultTokens;
+          }
           return c.json({
             jsonrpc: '2.0',
             id: body.id,
