@@ -1,6 +1,6 @@
 # Context Guardian
 
-MCP server that cuts cloud LLM costs **36-42%** by indexing context locally and giving agents precision retrieval tools instead of raw context dumps.
+MCP server that indexes context locally and gives agents search tools instead of raw context dumps.
 
 Works with any MCP-compatible agent (Claude Code, Cursor, Aider, Cline, Factory Droid). Also works as a transparent proxy for agents that use OpenAI/Anthropic APIs directly.
 
@@ -82,15 +82,15 @@ The proxy intercepts requests above the token threshold, rewrites them with RAG 
 
 Measured on a **real codebase** (WebLLM/Bonsai-WebGPU R&D repository — public), 3 scenarios (75K-98K tokens each), 3 repeats, live Claude Opus via Factory Droid.
 
-| Mode | Accuracy | Token Reduction | Cost Reduction |
-|------|----------|-----------------|----------------|
-| Baseline (raw dump) | 100% | — | — |
-| **MCP (unguided)** | **100%** | **43.3%** | **35.8%** |
-| Guided (search plan) | 94.4% | 53.6% | 42.0% |
+| Mode | Accuracy | Token Reduction |
+|------|----------|-----------------|
+| Baseline (raw dump) | 100% | n/a |
+| **MCP (unguided)** | **100%** | **43.3%** |
+| Guided (search plan) | 94.4% | 53.6% |
 
 **Key findings:**
 - **Zero accuracy loss** when the cloud model uses tools autonomously (unguided MCP mode)
-- **36-42% cost reduction** measured in actual billed tokens (Anthropic pricing)
+- Dollar figures in the benchmark script come from a price table inside the script, not from a bill. Treat the token counts as the measurement.
 - On investigation tasks (finding bugs in 75K+ token logs), cost savings reach **50-67%**
 - On dense, mostly-relevant code contexts, savings are minimal (~2-14%) — CG correctly adds less value when context is already focused
 - Adds **15-25 seconds** per request (MCP indexing + tool calls). Negligible for 20-30 minute agent sessions

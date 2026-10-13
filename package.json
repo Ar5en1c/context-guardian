@@ -1,7 +1,7 @@
 {
   "name": "context-guardian-mcp",
   "version": "0.3.1",
-  "description": "MCP server + proxy that cuts cloud LLM costs 36-42% by indexing context locally with Ollama and giving agents precision retrieval tools instead of raw dumps.",
+  "description": "MCP server + proxy that indexes context locally with Ollama and gives agents precision retrieval tools instead of raw dumps.",
   "type": "module",
   "preferGlobal": true,
   "bin": {
